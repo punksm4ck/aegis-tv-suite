@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.m3u
+.DS_Store
+build/
+dist/
+*.app/
+*.command
