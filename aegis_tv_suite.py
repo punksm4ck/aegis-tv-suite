@@ -75,7 +75,7 @@ class AegisTVSuite(QMainWindow):
         self.channels = []
         self.is_fullscreen = False
         
-        self.vlc_instance = vlc.Instance("--no-xlib", "--drop-late-frames", "--audio-output=waveout")
+        self.vlc_instance = vlc.Instance("--no-xlib", "--drop-late-frames", "--aout=waveout")
         self.player = self.vlc_instance.media_player_new()
         self.player.video_set_mouse_input(False)
         self.player.video_set_key_input(False)
