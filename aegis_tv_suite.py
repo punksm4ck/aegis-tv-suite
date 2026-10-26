@@ -1,322 +1,299 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-import requests
-import threading
-import platform
+import sys, platform, requests
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QHBoxLayout, QTabWidget, QTreeWidget, QTreeWidgetItem,
+                             QPushButton, QLineEdit, QLabel, QSplitter, QFileDialog, QMessageBox, QFrame)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+import vlc
 
-class UnifiedTVApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Aegis Unified Live TV Suite - Enterprise Edition")
-        self.root.geometry("1400x850")
-        self.available_channels_data = []
-        self.setup_ui()
-        self.init_player()
-        self.load_data_thread()
-
-    def init_player(self):
+class DataFetcher(QThread):
+    loaded = pyqtSignal(list)
+    error = pyqtSignal(str)
+    
+    def run(self):
         try:
-            import vlc
-            self.vlc_instance = vlc.Instance("--no-xlib")
-            self.player = self.vlc_instance.media_player_new()
-            self.vlc_available = True
-        except ImportError:
-            self.vlc_available = False
-            messagebox.showwarning("VLC Missing", "Please install VLC and run 'pip install python-vlc' for the internal player to work.")
+            r = requests.get("https://iptv-org.github.io/iptv/countries/us.m3u", timeout=15)
+            r.raise_for_status()
+            channels = []
+            current = {}
+            for line in r.text.splitlines():
+                line = line.strip()
+                if line.startswith("#EXTINF:-1"):
+                    parts = line.split(",", 1)
+                    current['name'] = parts[1].strip() if len(parts) > 1 else "Unknown"
+                    current['category'] = line.split('group-title="')[1].split('"')[0] if 'group-title="' in line else "Local"
+                elif line and not line.startswith("#"):
+                    current['url'] = line
+                    channels.append(current)
+                    current = {}
+            self.loaded.emit(channels)
+        except Exception as e:
+            self.error.emit(str(e))
+
+class ClickableVideoFrame(QFrame):
+    doubleClicked = pyqtSignal()
+    def mouseDoubleClickEvent(self, event):
+        self.doubleClicked.emit()
+        super().mouseDoubleClickEvent(event)
+
+class AegisTVSuite(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Aegis Unified Live TV Suite - Enterprise Edition (PyQt6)")
+        self.resize(1400, 850)
+        self.channels = []
+        self.is_fullscreen = False
+        
+        self.vlc_instance = vlc.Instance("--no-xlib", "--drop-late-frames")
+        self.player = self.vlc_instance.media_player_new()
+        self.player.video_set_mouse_input(False)
+        self.player.video_set_key_input(False)
+        
+        self.setup_ui()
+        
+        self.statusBar().showMessage("Initializing Network Request...")
+        self.fetcher = DataFetcher()
+        self.fetcher.loaded.connect(self.on_data_loaded)
+        self.fetcher.error.connect(lambda e: self.statusBar().showMessage(f"Error: {e}"))
+        self.fetcher.start()
 
     def setup_ui(self):
-        style = ttk.Style()
-        style.theme_use('clam')
-        style.configure('TFrame', background='#e0e0e0')
-        style.configure('Treeview', rowheight=25)
-        style.configure('Treeview.Heading', font=('Helvetica', 10, 'bold'))
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
         
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.tab_config = QWidget()
+        self.setup_config_tab()
+        self.tabs.addTab(self.tab_config, "Tuner Configurator")
         
-        self.tab_config = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_config, text="Tuner Configurator")
-        self.setup_configurator_tab()
-        
-        self.tab_guide = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_guide, text="Live TV Guide & Player")
+        self.tab_guide = QWidget()
         self.setup_guide_tab()
-        
-        self.status_var = tk.StringVar(value="Initializing Network Request...")
-        self.status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
-        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.tabs.addTab(self.tab_guide, "Live TV Guide & Player")
 
-    def setup_configurator_tab(self):
-        top_bar = ttk.Frame(self.tab_config)
-        top_bar.pack(fill=tk.X, pady=(0, 10))
+    def setup_config_tab(self):
+        layout = QVBoxLayout(self.tab_config)
         
-        ttk.Label(top_bar, text="Search Available:").pack(side=tk.LEFT, padx=(0, 5))
-        self.search_var = tk.StringVar()
-        self.search_var.trace_add('write', self.filter_channels)
-        self.search_entry = ttk.Entry(top_bar, textvariable=self.search_var, width=30)
-        self.search_entry.pack(side=tk.LEFT, padx=(0, 10))
+        top_bar = QHBoxLayout()
+        top_bar.addWidget(QLabel("Search Available:"))
+        self.search_input = QLineEdit()
+        self.search_input.textChanged.connect(self.filter_channels)
+        top_bar.addWidget(self.search_input)
         
-        self.export_btn = ttk.Button(top_bar, text="Export Queued Channels to M3U", command=self.export_m3u)
-        self.export_btn.pack(side=tk.RIGHT)
+        load_btn = QPushButton("Load Existing M3U")
+        load_btn.clicked.connect(self.load_m3u_staging)
+        top_bar.addWidget(load_btn)
         
-        self.load_btn = ttk.Button(top_bar, text="Load Existing M3U", command=self.load_m3u_to_staging)
-        self.load_btn.pack(side=tk.RIGHT, padx=5)
+        export_btn = QPushButton("Export Queued Channels to M3U")
+        export_btn.clicked.connect(self.export_m3u)
+        top_bar.addWidget(export_btn)
+        layout.addLayout(top_bar)
         
-        content_frame = ttk.Frame(self.tab_config)
-        content_frame.pack(fill=tk.BOTH, expand=True)
-        content_frame.columnconfigure(0, weight=1)
-        content_frame.columnconfigure(1, weight=0)
-        content_frame.columnconfigure(2, weight=1)
-        content_frame.rowconfigure(1, weight=1)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        ttk.Label(content_frame, text="Available Channels", font=('Helvetica', 10, 'bold')).grid(row=0, column=0, pady=(0, 5), sticky="w")
-        ttk.Label(content_frame, text="Queued for Playlist", font=('Helvetica', 10, 'bold')).grid(row=0, column=2, pady=(0, 5), sticky="w")
+        self.tree_avail = QTreeWidget()
+        self.tree_avail.setHeaderLabels(["Available Channels", "Category", "URL"])
+        self.tree_avail.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
+        splitter.addWidget(self.tree_avail)
         
-        left_frame = ttk.Frame(content_frame)
-        left_frame.grid(row=1, column=0, sticky="nsew")
-        self.available_tree = self.create_treeview(left_frame)
+        btn_frame = QWidget()
+        btn_layout = QVBoxLayout(btn_frame)
+        add_btn = QPushButton("Add >>")
+        add_btn.clicked.connect(self.add_to_staging)
+        rem_btn = QPushButton("<< Remove")
+        rem_btn.clicked.connect(self.remove_from_staging)
+        btn_layout.addStretch()
+        btn_layout.addWidget(add_btn)
+        btn_layout.addWidget(rem_btn)
+        btn_layout.addStretch()
+        splitter.addWidget(btn_frame)
         
-        btn_frame = ttk.Frame(content_frame)
-        btn_frame.grid(row=1, column=1, padx=10, sticky="n", pady=50)
-        ttk.Button(btn_frame, text="Add >>", command=self.add_to_staging, width=12).pack(pady=10)
-        ttk.Button(btn_frame, text="<< Remove", command=self.remove_from_staging, width=12).pack(pady=10)
+        self.tree_staged = QTreeWidget()
+        self.tree_staged.setHeaderLabels(["Queued for Playlist", "Category", "URL"])
+        self.tree_staged.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
+        splitter.addWidget(self.tree_staged)
         
-        right_frame = ttk.Frame(content_frame)
-        right_frame.grid(row=1, column=2, sticky="nsew")
-        self.staging_tree = self.create_treeview(right_frame)
+        layout.addWidget(splitter)
 
     def setup_guide_tab(self):
-        self.guide_paned = ttk.PanedWindow(self.tab_guide, orient=tk.HORIZONTAL)
-        self.guide_paned.pack(fill=tk.BOTH, expand=True)
-
-        left_pane = ttk.Frame(self.guide_paned)
-        self.guide_paned.add(left_pane, weight=1)
-
-        right_pane = ttk.Frame(self.guide_paned)
-        self.guide_paned.add(right_pane, weight=3)
+        layout = QVBoxLayout(self.tab_guide)
         
-        top_bar = ttk.Frame(left_pane)
-        top_bar.pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(top_bar, text="Load M3U", command=self.load_guide_m3u).pack(side=tk.LEFT, padx=2)
-        ttk.Button(top_bar, text="Sync Queue", command=self.sync_queue_to_guide).pack(side=tk.LEFT, padx=2)
+        self.guide_top_widget = QWidget()
+        top_bar = QHBoxLayout(self.guide_top_widget)
+        top_bar.setContentsMargins(0, 0, 0, 0)
+        load_guide_btn = QPushButton("Load M3U Tuner File")
+        load_guide_btn.clicked.connect(self.load_guide_m3u)
+        top_bar.addWidget(load_guide_btn)
         
-        self.guide_tree = ttk.Treeview(left_pane, columns=("name", "category"), show="headings")
-        self.guide_tree.heading("name", text="Station")
-        self.guide_tree.heading("category", text="Genre")
-        self.guide_tree.column("name", width=180)
-        self.guide_tree.column("category", width=120)
+        sync_btn = QPushButton("Sync from Configurator Queue")
+        sync_btn.clicked.connect(self.sync_queue)
+        top_bar.addWidget(sync_btn)
         
-        scrollbar = ttk.Scrollbar(left_pane, orient=tk.VERTICAL, command=self.guide_tree.yview)
-        self.guide_tree.configure(yscroll=scrollbar.set)
-        self.guide_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.guide_tree.bind("<Double-1>", self.play_channel)
-
-        self.video_frame = tk.Frame(right_pane, bg="black")
-        self.video_frame.pack(fill=tk.BOTH, expand=True)
+        self.lbl_now_playing = QLabel("Status: Ready")
+        self.lbl_now_playing.setStyleSheet("font-weight: bold; font-size: 14px;")
+        top_bar.addStretch()
+        top_bar.addWidget(self.lbl_now_playing)
         
-        control_bar = ttk.Frame(right_pane)
-        control_bar.pack(fill=tk.X, pady=5)
-        ttk.Button(control_bar, text="Stop Playback", command=self.stop_playback).pack(side=tk.LEFT, padx=5)
-        self.now_playing = tk.StringVar(value="Status: Ready")
-        ttk.Label(control_bar, textvariable=self.now_playing, font=('Helvetica', 12, 'bold')).pack(side=tk.LEFT, padx=15)
+        stop_btn = QPushButton("Stop Playback")
+        stop_btn.clicked.connect(self.stop_playback)
+        top_bar.addWidget(stop_btn)
+        
+        layout.addWidget(self.guide_top_widget)
+        
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        self.tree_guide = QTreeWidget()
+        self.tree_guide.setHeaderLabels(["Station", "Genre"])
+        self.tree_guide.itemDoubleClicked.connect(self.play_channel)
+        splitter.addWidget(self.tree_guide)
+        
+        self.video_frame = ClickableVideoFrame()
+        self.video_frame.setStyleSheet("background-color: black;")
+        self.video_frame.doubleClicked.connect(self.toggle_fullscreen)
+        splitter.addWidget(self.video_frame)
+        
+        splitter.setSizes([300, 900])
+        layout.addWidget(splitter)
 
-    def create_treeview(self, parent_frame):
-        tree = ttk.Treeview(parent_frame, columns=("name", "category", "url"), show="headings", selectmode="extended")
-        tree.heading("name", text="Channel Name")
-        tree.heading("category", text="Category")
-        tree.heading("url", text="Stream URL")
-        tree.column("name", width=200)
-        tree.column("category", width=150)
-        tree.column("url", width=250)
-        scrollbar = ttk.Scrollbar(parent_frame, orient=tk.VERTICAL, command=tree.yview)
-        tree.configure(yscroll=scrollbar.set)
-        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        return tree
+    def toggle_fullscreen(self):
+        if not self.is_fullscreen:
+            self.is_fullscreen = True
+            self.tabs.tabBar().hide()
+            self.guide_top_widget.hide()
+            self.tree_guide.hide()
+            self.statusBar().hide()
+            self.showFullScreen()
+        else:
+            self.is_fullscreen = False
+            self.tabs.tabBar().show()
+            self.guide_top_widget.show()
+            self.tree_guide.show()
+            self.statusBar().show()
+            self.showNormal()
 
-    def load_data_thread(self):
-        self.status_var.set("Downloading open-source US channel database from IPTV-org...")
-        threading.Thread(target=self.fetch_channels, daemon=True).start()
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self.is_fullscreen:
+            self.toggle_fullscreen()
+        super().keyPressEvent(event)
 
-    def fetch_channels(self):
-        try:
-            response = requests.get("https://iptv-org.github.io/iptv/countries/us.m3u", timeout=15)
-            response.raise_for_status()
-            self.parse_m3u_to_available(response.text)
-            self.root.after(0, self.update_available_tree, self.available_channels_data)
-            self.root.after(0, lambda: self.status_var.set(f"Loaded {len(self.available_channels_data)} US channels."))
-        except Exception as e:
-            self.root.after(0, lambda: self.status_var.set(f"Error loading channels: {str(e)}"))
+    def on_data_loaded(self, data):
+        self.channels = data
+        self.update_avail_tree(data)
+        self.statusBar().showMessage(f"Loaded {len(data)} US channels.")
 
-    def parse_m3u_to_available(self, text):
-        lines = text.splitlines()
-        current_channel = {}
-        for line in lines:
-            line = line.strip()
-            if line.startswith("#EXTINF:-1"):
-                parts = line.split(",", 1)
-                current_channel['name'] = parts[1].strip() if len(parts) > 1 else "Unknown Network"
-                if 'group-title="' in line:
-                    grp = line.split('group-title="')[1].split('"')[0]
-                    current_channel['category'] = grp
-                else:
-                    current_channel['category'] = "Local / Uncategorized"
-            elif line and not line.startswith("#"):
-                current_channel['url'] = line
-                self.available_channels_data.append(current_channel)
-                current_channel = {}
-
-    def filter_channels(self, *args):
-        query = self.search_var.get().lower()
-        filtered = [c for c in self.available_channels_data if query in c.get('name', '').lower() or query in c.get('category', '').lower()]
-        self.update_available_tree(filtered)
-
-    def update_available_tree(self, data):
-        for item in self.available_tree.get_children():
-            self.available_tree.delete(item)
+    def update_avail_tree(self, data):
+        self.tree_avail.clear()
         for ch in data:
-            self.available_tree.insert("", tk.END, values=(ch.get("name", ""), ch.get("category", ""), ch.get("url", "")))
+            item = QTreeWidgetItem([ch.get('name'), ch.get('category'), ch.get('url')])
+            self.tree_avail.addTopLevelItem(item)
 
-    def load_m3u_to_staging(self):
-        filepath = filedialog.askopenfilename(title="Select M3U Tuner File", filetypes=[("M3U", "*.m3u"), ("All", "*.*")])
-        if not filepath:
-            return
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-            current_name = "Unknown"
-            current_category = "Local"
-            staged_urls = [self.staging_tree.item(i, "values")[2] for i in self.staging_tree.get_children()]
-            added_count = 0
-            for line in lines:
-                line = line.strip()
-                if line.startswith("#EXTINF"):
-                    parts = line.split(",", 1)
-                    current_name = parts[1].strip() if len(parts) > 1 else "Unknown"
-                    if 'group-title="' in line:
-                        current_category = line.split('group-title="')[1].split('"')[0]
-                    else:
-                        current_category = "Local"
-                elif line and not line.startswith("#"):
-                    if line not in staged_urls:
-                        self.staging_tree.insert("", tk.END, values=(current_name, current_category, line))
-                        staged_urls.append(line)
-                        added_count += 1
-            messagebox.showinfo("Load Successful", f"Imported {added_count} channels into the queue.")
-        except Exception as e:
-            messagebox.showerror("Load Failed", str(e))
+    def filter_channels(self, text):
+        query = text.lower()
+        filtered = [c for c in self.channels if query in c.get('name', '').lower() or query in c.get('category', '').lower()]
+        self.update_avail_tree(filtered)
 
     def add_to_staging(self):
-        staged_urls = [self.staging_tree.item(i, "values")[2] for i in self.staging_tree.get_children()]
-        for item in self.available_tree.selection():
-            vals = self.available_tree.item(item, "values")
-            if vals[2] not in staged_urls:
-                self.staging_tree.insert("", tk.END, values=vals)
-                staged_urls.append(vals[2])
+        staged_urls = [self.tree_staged.topLevelItem(i).text(2) for i in range(self.tree_staged.topLevelItemCount())]
+        for item in self.tree_avail.selectedItems():
+            if item.text(2) not in staged_urls:
+                new_item = QTreeWidgetItem([item.text(0), item.text(1), item.text(2)])
+                self.tree_staged.addTopLevelItem(new_item)
+                staged_urls.append(item.text(2))
 
     def remove_from_staging(self):
-        for item in self.staging_tree.selection():
-            self.staging_tree.delete(item)
+        for item in self.tree_staged.selectedItems():
+            index = self.tree_staged.indexOfTopLevelItem(item)
+            self.tree_staged.takeTopLevelItem(index)
 
-    def export_m3u(self):
-        staged_items = self.staging_tree.get_children()
-        if not staged_items:
-            messagebox.showwarning("Export Blocked", "Your queue is empty.")
-            return
-        filepath = filedialog.asksaveasfilename(defaultextension=".m3u", initialfile="homelab_custom_tuner.m3u", title="Save M3U", filetypes=[("M3U", "*.m3u")])
-        if not filepath:
-            return
-        try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write("#EXTM3U\n")
-                for item in staged_items:
-                    values = self.staging_tree.item(item, "values")
-                    name, category, url = values[0], values[1], values[2]
-                    f.write(f'#EXTINF:-1 tvg-name="{name}" group-title="{category}",{name}\n')
-                    f.write(f"{url}\n")
-            messagebox.showinfo("Export Successful", f"Saved {len(staged_items)} stations.")
-        except Exception as e:
-            messagebox.showerror("Export Failed", str(e))
+    def load_m3u_staging(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select M3U", "", "M3U (*.m3u);;All (*.*)")
+        if path:
+            self.parse_and_inject_m3u(path, self.tree_staged)
 
     def load_guide_m3u(self):
-        filepath = filedialog.askopenfilename(filetypes=[("M3U Playlist", "*.m3u"), ("All Files", "*.*")])
-        if not filepath:
-            return
-        for item in self.guide_tree.get_children():
-            self.guide_tree.delete(item)
+        path, _ = QFileDialog.getOpenFileName(self, "Select M3U", "", "M3U (*.m3u);;All (*.*)")
+        if path:
+            self.tree_guide.clear()
+            self.parse_and_inject_m3u(path, self.tree_guide, True)
+
+    def parse_and_inject_m3u(self, filepath, target_tree, guide_mode=False):
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
-            current_name = ""
-            current_category = ""
+            name, cat = "Unknown", "Local"
+            existing = [target_tree.topLevelItem(i).text(2) for i in range(target_tree.topLevelItemCount())] if not guide_mode else []
             count = 0
             for line in lines:
                 line = line.strip()
                 if line.startswith("#EXTINF"):
                     parts = line.split(",", 1)
-                    current_name = parts[1].strip() if len(parts) > 1 else "Unknown"
-                    if 'group-title="' in line:
-                        current_category = line.split('group-title="')[1].split('"')[0]
-                    else:
-                        current_category = "Local"
+                    name = parts[1].strip() if len(parts) > 1 else "Unknown"
+                    cat = line.split('group-title="')[1].split('"')[0] if 'group-title="' in line else "Local"
                 elif line and not line.startswith("#"):
-                    self.guide_tree.insert("", tk.END, values=(current_name, current_category), tags=(line,))
-                    count += 1
-            self.now_playing.set(f"Loaded {count} channels.")
+                    if guide_mode:
+                        item = QTreeWidgetItem([name, cat])
+                        item.setData(0, Qt.ItemDataRole.UserRole, line)
+                        target_tree.addTopLevelItem(item)
+                        count += 1
+                    else:
+                        if line not in existing:
+                            target_tree.addTopLevelItem(QTreeWidgetItem([name, cat, line]))
+                            existing.append(line)
+                            count += 1
+            self.statusBar().showMessage(f"Imported {count} channels.")
         except Exception as e:
-            messagebox.showerror("Parse Error", str(e))
+            QMessageBox.critical(self, "Error", str(e))
 
-    def sync_queue_to_guide(self):
-        for item in self.guide_tree.get_children():
-            self.guide_tree.delete(item)
-        staged_items = self.staging_tree.get_children()
-        for item in staged_items:
-            values = self.staging_tree.item(item, "values")
-            name, category, url = values[0], values[1], values[2]
-            self.guide_tree.insert("", tk.END, values=(name, category), tags=(url,))
-        self.now_playing.set(f"Synced {len(staged_items)} channels from queue.")
-        self.notebook.select(self.tab_guide)
-
-    def get_window_handle(self):
-        sys_os = platform.system()
-        window_id = self.video_frame.winfo_id()
-        if sys_os == "Windows":
-            self.player.set_hwnd(window_id)
-        elif sys_os == "Darwin":
+    def export_m3u(self):
+        if self.tree_staged.topLevelItemCount() == 0:
+            QMessageBox.warning(self, "Warning", "Queue is empty.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Save M3U", "homelab_custom_tuner.m3u", "M3U (*.m3u)")
+        if path:
             try:
-                self.player.set_nsobject(window_id)
-            except Exception:
-                pass
-        else:
-            self.player.set_xwindow(window_id)
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write("#EXTM3U\n")
+                    for i in range(self.tree_staged.topLevelItemCount()):
+                        item = self.tree_staged.topLevelItem(i)
+                        name, cat, url = item.text(0), item.text(1), item.text(2)
+                        f.write(f'#EXTINF:-1 tvg-name="{name}" group-title="{cat}",{name}\n{url}\n')
+                QMessageBox.information(self, "Success", f"Saved {self.tree_staged.topLevelItemCount()} stations.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", str(e))
 
-    def play_channel(self, event=None):
-        if not self.vlc_available:
-            messagebox.showerror("VLC Required", "python-vlc module or VLC media player is not installed on this system. Cannot play embedded video.")
-            return
-        selected = self.guide_tree.selection()
-        if not selected:
-            return
-        item = selected[0]
-        values = self.guide_tree.item(item, "values")
-        url = self.guide_tree.item(item, "tags")[0]
-        name = values[0]
+    def sync_queue(self):
+        self.tree_guide.clear()
+        for i in range(self.tree_staged.topLevelItemCount()):
+            item = self.tree_staged.topLevelItem(i)
+            new_item = QTreeWidgetItem([item.text(0), item.text(1)])
+            new_item.setData(0, Qt.ItemDataRole.UserRole, item.text(2))
+            self.tree_guide.addTopLevelItem(new_item)
+        self.lbl_now_playing.setText("Status: Synced")
+
+    def play_channel(self, item, column):
+        url = item.data(0, Qt.ItemDataRole.UserRole)
+        name = item.text(0)
+        self.lbl_now_playing.setText(f"Tuning Live: {name}")
         
-        self.now_playing.set(f"Tuning Live: {name}")
         self.player.stop()
         
+        sys_os = platform.system()
+        win_id = int(self.video_frame.winId())
+        if sys_os == "Windows":
+            self.player.set_hwnd(win_id)
+        elif sys_os == "Darwin":
+            self.player.set_nsobject(win_id)
+        else:
+            self.player.set_xwindow(win_id)
+            
         media = self.vlc_instance.media_new(url)
         self.player.set_media(media)
-        self.get_window_handle()
         self.player.play()
 
     def stop_playback(self):
-        if self.vlc_available:
-            self.player.stop()
-            self.now_playing.set("Status: Stopped")
+        self.player.stop()
+        self.lbl_now_playing.setText("Status: Stopped")
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = UnifiedTVApp(root)
-    root.mainloop()
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    window = AegisTVSuite()
+    window.show()
+    sys.exit(app.exec())
