@@ -285,6 +285,11 @@ class AegisTVSuite(QMainWindow):
             
         media = self.vlc_instance.media_new(url)
         self.player.set_media(media)
+        
+        # Force audio track and un-mute
+        self.player.audio_set_volume(100)
+        self.player.audio_set_mute(False)
+        
         self.player.play()
 
     def stop_playback(self):
