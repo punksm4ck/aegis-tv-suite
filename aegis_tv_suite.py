@@ -1,7 +1,8 @@
 import sys, platform, requests
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QTabWidget, QTreeWidget, QTreeWidgetItem,
-                             QPushButton, QLineEdit, QLabel, QSplitter, QFileDialog, QMessageBox, QFrame)
+                             QPushButton, QLineEdit, QLabel, QSplitter, QFileDialog, 
+                             QMessageBox, QFrame, QListWidget, QListWidgetItem)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import vlc
 
@@ -31,9 +32,40 @@ class DataFetcher(QThread):
 
 class ClickableVideoFrame(QFrame):
     doubleClicked = pyqtSignal()
+    rightClicked = pyqtSignal()
     def mouseDoubleClickEvent(self, event):
-        self.doubleClicked.emit()
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.doubleClicked.emit()
         super().mouseDoubleClickEvent(event)
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            self.rightClicked.emit()
+        super().mousePressEvent(event)
+
+class ChannelOverlay(QWidget):
+    channel_selected = pyqtSignal(str, str)
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        self.list_widget = QListWidget()
+        self.list_widget.setStyleSheet("QListWidget { background-color: rgba(25, 25, 25, 220); color: white; font-size: 15px; font-weight: bold; border-radius: 10px; padding: 10px; outline: none; border: 1px solid #444; } QListWidget::item { padding: 10px; border-radius: 5px; } QListWidget::item:selected { background-color: #ff6a00; color: black; } QListWidget::item:hover { background-color: rgba(255, 106, 0, 100); }")
+        self.list_widget.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.list_widget.itemClicked.connect(self.on_item_clicked)
+        layout.addWidget(self.list_widget)
+    def populate(self, tree_guide):
+        self.list_widget.clear()
+        for i in range(tree_guide.topLevelItemCount()):
+            item = tree_guide.topLevelItem(i)
+            name = item.text(0)
+            url = item.data(0, Qt.ItemDataRole.UserRole)
+            list_item = QListWidgetItem(name)
+            list_item.setData(Qt.ItemDataRole.UserRole, url)
+            self.list_widget.addItem(list_item)
+    def on_item_clicked(self, item):
+        self.channel_selected.emit(item.text(), item.data(Qt.ItemDataRole.UserRole))
 
 class AegisTVSuite(QMainWindow):
     def __init__(self):
@@ -43,10 +75,13 @@ class AegisTVSuite(QMainWindow):
         self.channels = []
         self.is_fullscreen = False
         
-        self.vlc_instance = vlc.Instance("--no-xlib", "--drop-late-frames")
+        self.vlc_instance = vlc.Instance("--no-xlib", "--drop-late-frames", "--audio-output=waveout")
         self.player = self.vlc_instance.media_player_new()
         self.player.video_set_mouse_input(False)
         self.player.video_set_key_input(False)
+        
+        self.overlay = ChannelOverlay()
+        self.overlay.channel_selected.connect(self.play_from_overlay)
         
         self.setup_ui()
         
@@ -126,7 +161,7 @@ class AegisTVSuite(QMainWindow):
         sync_btn.clicked.connect(self.sync_queue)
         top_bar.addWidget(sync_btn)
         
-        self.lbl_now_playing = QLabel("Status: Ready")
+        self.lbl_now_playing = QLabel("Status: Ready (Right-Click video in Fullscreen for Channels)")
         self.lbl_now_playing.setStyleSheet("font-weight: bold; font-size: 14px;")
         top_bar.addStretch()
         top_bar.addWidget(self.lbl_now_playing)
@@ -147,10 +182,27 @@ class AegisTVSuite(QMainWindow):
         self.video_frame = ClickableVideoFrame()
         self.video_frame.setStyleSheet("background-color: black;")
         self.video_frame.doubleClicked.connect(self.toggle_fullscreen)
+        self.video_frame.rightClicked.connect(self.toggle_overlay)
         splitter.addWidget(self.video_frame)
         
         splitter.setSizes([300, 900])
         layout.addWidget(splitter)
+
+    def toggle_overlay(self):
+        if not self.is_fullscreen:
+            return
+        if self.overlay.isVisible():
+            self.overlay.hide()
+        else:
+            self.overlay.populate(self.tree_guide)
+            screen_geom = self.screen().geometry()
+            width = 350
+            height = int(screen_geom.height() * 0.8)
+            x = screen_geom.width() - width - 40
+            y = int((screen_geom.height() - height) / 2)
+            self.overlay.setGeometry(x, y, width, height)
+            self.overlay.show()
+            self.overlay.raise_()
 
     def toggle_fullscreen(self):
         if not self.is_fullscreen:
@@ -167,11 +219,16 @@ class AegisTVSuite(QMainWindow):
             self.tree_guide.show()
             self.statusBar().show()
             self.showNormal()
+            self.overlay.hide()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape and self.is_fullscreen:
             self.toggle_fullscreen()
         super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        self.overlay.close()
+        super().closeEvent(event)
 
     def on_data_loaded(self, data):
         self.channels = data
@@ -267,10 +324,20 @@ class AegisTVSuite(QMainWindow):
             self.tree_guide.addTopLevelItem(new_item)
         self.lbl_now_playing.setText("Status: Synced")
 
+    def play_from_overlay(self, name, url):
+        self.lbl_now_playing.setText(f"Tuning Live: {name} (Right-Click video in Fullscreen for Channels)")
+        self.player.stop()
+        media = self.vlc_instance.media_new(url)
+        self.player.set_media(media)
+        self.player.audio_set_volume(100)
+        self.player.audio_set_mute(False)
+        self.player.play()
+        self.overlay.hide()
+
     def play_channel(self, item, column):
         url = item.data(0, Qt.ItemDataRole.UserRole)
         name = item.text(0)
-        self.lbl_now_playing.setText(f"Tuning Live: {name}")
+        self.lbl_now_playing.setText(f"Tuning Live: {name} (Right-Click video in Fullscreen for Channels)")
         
         self.player.stop()
         
@@ -286,7 +353,6 @@ class AegisTVSuite(QMainWindow):
         media = self.vlc_instance.media_new(url)
         self.player.set_media(media)
         
-        # Force audio track and un-mute
         self.player.audio_set_volume(100)
         self.player.audio_set_mute(False)
         
