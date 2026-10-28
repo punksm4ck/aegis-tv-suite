@@ -7,3 +7,5 @@ dist/
 *.app/
 *.command
 .venv/
+*.bak*
+*.predvr

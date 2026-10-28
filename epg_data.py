@@ -10,22 +10,38 @@ CACHE = os.path.expanduser("~/.aegis_tv")
 UA = {"User-Agent": "aegis-tv-guide/2.0"}
 
 
+def _ps_exe():
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    return os.path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+
+
 def _password():
     pw = os.environ.get("AEGIS_TV_PASS")
     if pw:
         return pw
-    if sys.platform != "darwin":
-        import keyring
-        pw = keyring.get_password(SERVICE, USER)
-        if not pw:
-            raise RuntimeError("no password stored for %s / %s (use keyring.set_password)" % (SERVICE, USER))
-        return pw
-    r = subprocess.run(["security", "find-generic-password", "-a", USER, "-s", SERVICE, "-w"],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
+    if sys.platform == "darwin":
+        r = subprocess.run(["security", "find-generic-password", "-a", USER, "-s", SERVICE, "-w"],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            return r.stdout.strip()
         raise RuntimeError("no password in Keychain: run  security add-generic-password -U -a "
                            + USER + " -s " + SERVICE + " -w")
-    return r.stdout.strip()
+    try:
+        import keyring
+        pw = keyring.get_password(SERVICE, USER)
+        if pw:
+            return pw
+    except Exception:
+        pass
+    f = os.path.join(os.path.expanduser("~"), ".aegis_tv", "pw.dpapi")
+    if os.path.exists(f):
+        ps = ("$s = (Get-Content -Raw -LiteralPath '" + f + "').Trim() | ConvertTo-SecureString; "
+              "[Runtime.InteropServices.Marshal]::PtrToStringBSTR("
+              "[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))")
+        r = subprocess.run([_ps_exe(), "-NoProfile", "-NonInteractive", "-EncodedCommand", __import__("base64").b64encode(ps.encode("utf-16-le")).decode()], capture_output=True, text=True, env={k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"})
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    raise RuntimeError("no stored password: set AEGIS_TV_PASS or create ~/.aegis_tv/pw.dpapi")
 
 
 def _fetch_live():

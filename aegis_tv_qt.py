@@ -237,6 +237,14 @@ class NameCell(QGraphicsRectItem):
 
 
 class ProgItem(QGraphicsRectItem):
+    def contextMenuEvent(self, e):
+        try:
+            import dvr
+            dvr.prog_menu(self.ch, self.prog, e.screenPos())
+        except Exception as ex:
+            print("dvr menu:", ex)
+        e.accept()
+
     def __init__(self, x, y, w, h, ch, prog, bus, airing, font):
         super().__init__(0, 0, w, h)
         self.setPos(x, y)
@@ -555,7 +563,7 @@ class Player(QWidget):
         else:
             try:
                 self.inst = vlc.Instance("--quiet", "--no-video-title-show",
-                                         "--network-caching=2000", "--no-stats")
+                                         "--network-caching=6000", "--no-stats", *os.environ.get("AEGIS_VLC_ARGS", "").split())
                 self.mp = self.inst.media_player_new()
                 self.ok = True
             except Exception as ex:
@@ -726,6 +734,32 @@ class Main(QMainWindow):
         split.setSizes([430, 1070])
         split.setStretchFactor(1, 1)
         self.setCentralWidget(split)
+        self._stall = {"t": None, "n": 0}
+        self.stall_timer = QTimer(self)
+        self.stall_timer.setInterval(3000)
+        self.stall_timer.timeout.connect(self._stall_check)
+        self.stall_timer.start()
+
+        self.dvr = None
+        try:
+            import dvr as dvr_mod
+            self.dvr_mod = dvr_mod
+            self.dvr = dvr_mod.init(self)
+            self.dvr_panel = dvr_mod.DVRPanel(self.dvr, self)
+            self.dvr.play_file.connect(self._dvr_play)
+            self.btn_rec = QPushButton("REC (F8)")
+            self.btn_rec.clicked.connect(self.dvr_rec_toggle)
+            self.btn_dvr = QPushButton("DVR (F7)")
+            self.btn_dvr.clicked.connect(self.dvr_panel.show_panel)
+            self.statusBar().addPermanentWidget(self.btn_rec)
+            self.statusBar().addPermanentWidget(self.btn_dvr)
+            for key, fn in (("F7", self.dvr_panel.show_panel), ("F8", self.dvr_rec_toggle),
+                            ("Alt+Left", lambda: self.dvr_seek(-30)), ("Alt+Right", lambda: self.dvr_seek(30))):
+                QShortcut(QKeySequence(key), self).activated.connect(fn)
+            from PyQt6.QtWidgets import QApplication
+            QApplication.instance().aboutToQuit.connect(self.dvr.shutdown)
+        except Exception as ex:
+            print("DVR disabled:", ex)
 
         for key, fn in (("F2", self.toggle_guide), ("F3", self.guide.jump_now),
                         ("F4", self.player.toggle_mute), ("F5", self.refresh),
@@ -738,6 +772,64 @@ class Main(QMainWindow):
         self.clock.timeout.connect(self.tick)
         self.clock.start()
         self.refresh()
+
+    def _dvr_play(self, path, label):
+        from pathlib import Path
+        self.player.play(Path(path).as_uri(), label)
+
+    def dvr_seek(self, secs):
+        try:
+            mp = self.player.mp
+            mp.set_time(max(0, mp.get_time() + secs * 1000))
+        except Exception:
+            pass
+
+    def dvr_rec_toggle(self):
+        import time
+        if self.dvr is None:
+            return
+        url = getattr(self.player, "url", "") or ""
+        label = getattr(self.player, "label", "") or "recording"
+        for j in self.dvr.jobs:
+            if j["status"] == "recording" and j["url"] == url:
+                self.dvr.stop(j["id"])
+                self.statusBar().showMessage("REC stopped: " + j["title"], 6000)
+                return
+        if not url or url.startswith("file:"):
+            self.statusBar().showMessage("Tune a live channel first", 5000)
+            return
+        now, end, name = time.time(), None, label
+        for c in self.lineup + self.other:
+            if c.url == url:
+                name = c.name
+                for pr in c.progs:
+                    ps, pe = self.dvr_mod.to_ts(pr.get("s")), self.dvr_mod.to_ts(pr.get("e"))
+                    if ps and pe and ps <= now < pe:
+                        end = pe
+                        label = "%s - %s" % (c.name, pr.get("t", ""))
+                break
+        self.dvr.add(name, url, label, now, end or now + 6 * 3600, True)
+        self.statusBar().showMessage("REC started: " + label, 6000)
+
+    def _stall_check(self):
+        try:
+            pl = self.player
+            if not pl.ok or not getattr(pl, "url", "") or str(pl.url).startswith("file:"):
+                return
+            if pl.mp.get_state() not in (vlc.State.Playing, vlc.State.Buffering):
+                self._stall["n"] = 0
+                return
+            t = pl.mp.get_time()
+            if t == self._stall["t"]:
+                self._stall["n"] += 1
+            else:
+                self._stall["t"], self._stall["n"] = t, 0
+            if self._stall["n"] >= 4:
+                self._stall["n"] = 0
+                self.statusBar().showMessage("Stream stalled, re-tuning...", 4000)
+                pl.play(pl.url, pl.label)
+        except Exception:
+            pass
 
     # ---- data
     def refresh(self):
