@@ -47,6 +47,8 @@ BASE = os.environ.get("AEGIS_TV_BASE", "https://tv.punksm4ck.com")
 CACHE = os.path.expanduser("~/.aegis_tv")
 SUITE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aegis_tv_suite.py")
 EXTERNAL = os.environ.get("AEGIS_TV_EXTERNAL") == "1"
+MONO = "Menlo" if sys.platform == "darwin" else "Consolas"
+DEFAULT_M3U = "https://iptv-org.github.io/iptv/countries/us.m3u"
 
 PX_MIN, ROW_H, NAME_W, HEAD_H, SLOT, HOURS = 4, 34, 200, 28, 30, 72
 BG, PANEL, GRID, CELL, AIR, EMPTY = "#0a0d08", "#11160e", "#2a3722", "#162012", "#3f6020", "#0d110a"
@@ -144,7 +146,7 @@ def find_source_url():
                     return safe_url(u)
     except OSError:
         pass
-    return ""
+    return DEFAULT_M3U
 
 
 def external_open(url):
@@ -153,10 +155,14 @@ def external_open(url):
         return
     if sys.platform == "darwin":
         subprocess.Popen(["open", "-a", "VLC", url])
-    elif shutil.which("vlc"):
-        subprocess.Popen([shutil.which("vlc"), url])
     else:
-        webbrowser.open(url)
+        exe = shutil.which("vlc") or next((x for x in (
+            r"C:\Program Files\VideoLAN\VLC\vlc.exe",
+            r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe") if os.path.exists(x)), None)
+        if exe:
+            subprocess.Popen([exe, url])
+        else:
+            webbrowser.open(url)
 
 
 @dataclass
@@ -302,7 +308,7 @@ class GuidePanel(QWidget):
     def __init__(self, bus):
         super().__init__()
         self.bus = bus
-        self.font_ = QFont("Menlo", 10)
+        self.font_ = QFont(MONO, 10)
         self.t0, self.H = 0, 1
         self.now_g = self.now_h = None
         self.head_scene, self.names_scene, self.grid_scene = QGraphicsScene(), QGraphicsScene(), QGraphicsScene()
@@ -418,12 +424,96 @@ class GuidePanel(QWidget):
 
 
 # ----------------------------------------------------------------- player
+class VideoFrame(QFrame):
+    doubleClicked = pyqtSignal()
+    rightClicked = pyqtSignal()
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.doubleClicked.emit()
+        e.accept()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.RightButton:
+            self.rightClicked.emit()
+        e.accept()
+
+
+class ChannelOverlay(QWidget):
+    """Translucent channel picker shown over the video in fullscreen."""
+    chosen = pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                         | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.chans = []
+        box = QFrame(self)
+        box.setObjectName("ovlbox")
+        self.q = QLineEdit()
+        self.q.setPlaceholderText("filter channels  (Esc closes)")
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.setRootIsDecorated(False)
+        self.tree.setColumnCount(2)
+        self.tree.setColumnWidth(0, 250)
+        inner = QVBoxLayout(box)
+        inner.addWidget(self.q)
+        inner.addWidget(self.tree, 1)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(box)
+        self.setStyleSheet(
+            "QFrame#ovlbox { background: rgba(10,13,8,215); border: 1px solid " + GRID + "; }"
+            "QTreeWidget, QLineEdit { background: rgba(17,22,14,170); border: 1px solid " + GRID
+            + "; color: " + FG + "; selection-background-color: " + AIR + "; }")
+        self.q.textChanged.connect(lambda _t: self.fill())
+        self.q.returnPressed.connect(self.pick_current)
+        self.tree.itemClicked.connect(lambda it, _c: self.pick(it))
+        self.tree.itemActivated.connect(lambda it, _c: self.pick(it))
+
+    def open_with(self, chans):
+        self.chans = [c for c in chans if c.url]
+        self.q.clear()
+        self.fill()
+        self.show()
+        self.raise_()
+        self.q.setFocus()
+
+    def fill(self):
+        t = self.q.text().lower().strip()
+        self.tree.clear()
+        for c in self.chans:
+            if t in c.name.lower():
+                p = now_prog(c)
+                it = QTreeWidgetItem([c.name, p["t"] if p else ""])
+                it.setData(0, Qt.ItemDataRole.UserRole, c)
+                self.tree.addTopLevelItem(it)
+
+    def pick_current(self):
+        it = self.tree.currentItem() or self.tree.topLevelItem(0)
+        if it is not None:
+            self.pick(it)
+
+    def pick(self, it):
+        if not self.isVisible():
+            return
+        self.hide()
+        self.chosen.emit(it.data(0, Qt.ItemDataRole.UserRole))
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape:
+            self.hide()
+        else:
+            super().keyPressEvent(e)
+
+
 class Player(QWidget):
     def __init__(self):
         super().__init__()
         self.url, self.label, self.inst, self.mp = "", "", None, None
         self.ok = False
-        self.video = QFrame()
+        self.video = VideoFrame()
         self.video.setStyleSheet("background: #000;")
         self.video.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.video.setMinimumSize(320, 180)
@@ -431,9 +521,10 @@ class Player(QWidget):
         self.info.setObjectName("info")
         self.btn_pause, self.btn_stop = QPushButton("PAUSE"), QPushButton("STOP")
         self.btn_mute, self.btn_pop = QPushButton("MUTE (F4)"), QPushButton("POP OUT")
+        self.btn_full = QPushButton("FULLSCREEN (F11)")
         self.vol = QSlider(Qt.Orientation.Horizontal)
         self.vol.setRange(0, 100)
-        self.vol.setValue(80)
+        self.vol.setValue(100)
         self.vol.setFixedWidth(120)
         self.btn_pause.clicked.connect(self.toggle_pause)
         self.btn_stop.clicked.connect(self.stop)
@@ -442,7 +533,7 @@ class Player(QWidget):
         self.vol.valueChanged.connect(self.set_volume)
         bar = QHBoxLayout()
         bar.setContentsMargins(6, 4, 6, 4)
-        for w in (self.btn_pause, self.btn_stop, self.btn_mute, self.vol, self.btn_pop):
+        for w in (self.btn_pause, self.btn_stop, self.btn_mute, self.vol, self.btn_full, self.btn_pop):
             bar.addWidget(w)
         bar.addStretch()
         lay = QVBoxLayout(self)
@@ -451,6 +542,8 @@ class Player(QWidget):
         lay.addWidget(self.info)
         lay.addWidget(self.video, 1)
         lay.addLayout(bar)
+        self.chrome = [self.info, self.btn_pause, self.btn_stop, self.btn_mute,
+                       self.vol, self.btn_full, self.btn_pop]
         self.poll = QTimer(self)
         self.poll.setInterval(1000)
         self.poll.timeout.connect(self.check_state)
@@ -487,9 +580,23 @@ class Player(QWidget):
         self.mp.set_media(self.inst.media_new(url))
         self._attach()
         self.mp.play()
-        self.mp.audio_set_volume(self.vol.value())
+        try:
+            self.mp.video_set_mouse_input(False)
+            self.mp.video_set_key_input(False)
+        except Exception:
+            pass
+        self._force_audio()
+        QTimer.singleShot(1500, self._force_audio)
         self.info.setText("TUNING: " + label)
         self.poll.start()
+
+    def _force_audio(self):
+        if self.ok:
+            try:
+                self.mp.audio_set_mute(False)
+                self.mp.audio_set_volume(self.vol.value())
+            except Exception:
+                pass
 
     def check_state(self):
         if not self.ok:
@@ -502,6 +609,10 @@ class Player(QWidget):
         self.info.setText(f"{names.get(st, str(st))}: {self.label}")
         if st in (vlc.State.Error, vlc.State.Ended, vlc.State.Stopped):
             self.poll.stop()
+
+    def set_chrome(self, visible):
+        for w in self.chrome:
+            w.setVisible(visible)
 
     def toggle_pause(self):
         if self.ok:
@@ -552,6 +663,11 @@ class Main(QMainWindow):
         self.guide = GuidePanel(self.bus)
         self.bus.tune.connect(self.tune)
         self.bus.hover.connect(self.on_hover)
+        self.overlay = ChannelOverlay(self)
+        self.overlay.chosen.connect(self.tune)
+        self.player.video.doubleClicked.connect(self.toggle_full)
+        self.player.video.rightClicked.connect(self.toggle_overlay)
+        self.player.btn_full.clicked.connect(self.toggle_full)
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("search channels (Ctrl+F)")
@@ -584,7 +700,7 @@ class Main(QMainWindow):
         self.btn_m3u.clicked.connect(self.load_m3u)
         self.btn_site.clicked.connect(lambda: webbrowser.open(BASE + "/"))
 
-        left = QWidget()
+        left = self.left = QWidget()
         lv = QVBoxLayout(left)
         lv.setContentsMargins(6, 6, 6, 6)
         r1, r2 = QHBoxLayout(), QHBoxLayout()
@@ -604,7 +720,7 @@ class Main(QMainWindow):
         self.right.setSizes([520, 380])
         self.right.setStretchFactor(0, 3)
         self.right.setStretchFactor(1, 2)
-        split = QSplitter(Qt.Orientation.Horizontal)
+        split = self.split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(left)
         split.addWidget(self.right)
         split.setSizes([430, 1070])
@@ -613,7 +729,7 @@ class Main(QMainWindow):
 
         for key, fn in (("F2", self.toggle_guide), ("F3", self.guide.jump_now),
                         ("F4", self.player.toggle_mute), ("F5", self.refresh),
-                        ("F11", self.toggle_full), ("Esc", self.leave_full),
+                        ("F11", self.toggle_full), ("F6", self.toggle_overlay), ("Esc", self.leave_full),
                         ("Ctrl+F", lambda: (self.search.setFocus(), self.search.selectAll()))):
             QShortcut(QKeySequence(key), self).activated.connect(fn)
 
@@ -756,14 +872,50 @@ class Main(QMainWindow):
         self.guide.setVisible(not self.guide.isVisible())
 
     def toggle_full(self):
-        self.showNormal() if self.isFullScreen() else self.showFullScreen()
+        if self.isFullScreen():
+            self.leave_full()
+        else:
+            self.enter_full()
+
+    def enter_full(self):
+        self._sizes = (self.split.sizes(), self.right.sizes())
+        self._guide_was = self.guide.isVisible()
+        self.overlay.hide()
+        self.left.hide()
+        self.guide.hide()
+        self.player.set_chrome(False)
+        self.statusBar().hide()
+        self.showFullScreen()
 
     def leave_full(self):
-        if self.isFullScreen():
-            self.showNormal()
+        if not self.isFullScreen():
+            return
+        self.overlay.hide()
+        self.showNormal()
+        self.left.show()
+        self.guide.setVisible(self._guide_was)
+        self.player.set_chrome(True)
+        self.statusBar().show()
+        try:
+            self.split.setSizes(self._sizes[0])
+            self.right.setSizes(self._sizes[1])
+        except Exception:
+            pass
+
+    def toggle_overlay(self):
+        if not self.isFullScreen():
+            return
+        if self.overlay.isVisible():
+            self.overlay.hide()
+            return
+        g = self.geometry()
+        w = max(360, int(g.width() * 0.36))
+        self.overlay.setGeometry(g.x() + g.width() - w, g.y(), w, g.height())
+        self.overlay.open_with(self.lineup)
 
     def closeEvent(self, e):
         self.clock.stop()
+        self.overlay.close()
         self.player.shutdown()
         if self.loader is not None and self.loader.isRunning():
             if not self.loader.wait(3000):
@@ -775,7 +927,7 @@ class Main(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("AEGIS TV-OPS")
-    app.setFont(QFont("Menlo", 11))
+    app.setFont(QFont(MONO, 11))
     app.setStyleSheet(QSS)
     w = Main()
     w.show()

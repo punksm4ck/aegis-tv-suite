@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Data layer: logs in to the TV site, reads /api/channels + /api/guide, caches locally.
 Password comes from the macOS Keychain (service aegis-tv-guide) or AEGIS_TV_PASS."""
-import http.cookiejar, json, os, subprocess, urllib.request
+import http.cookiejar, json, os, subprocess, sys, urllib.request
 
 BASE = os.environ.get("AEGIS_TV_BASE", "https://tv.punksm4ck.com")
 USER = os.environ.get("AEGIS_TV_USER", "punksm4ck")
@@ -14,11 +14,17 @@ def _password():
     pw = os.environ.get("AEGIS_TV_PASS")
     if pw:
         return pw
+    if sys.platform != "darwin":
+        import keyring
+        pw = keyring.get_password(SERVICE, USER)
+        if not pw:
+            raise RuntimeError("no password stored for %s / %s (use keyring.set_password)" % (SERVICE, USER))
+        return pw
     r = subprocess.run(["security", "find-generic-password", "-a", USER, "-s", SERVICE, "-w"],
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("no password in Keychain: run  security add-generic-password -U -a "
-                           f"{USER} -s {SERVICE} -w")
+                           + USER + " -s " + SERVICE + " -w")
     return r.stdout.strip()
 
 
