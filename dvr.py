@@ -53,6 +53,17 @@ def mb(p):
         return 0.0
 
 
+def _open_dir(path):
+    """Cross-platform 'open folder' (os.startfile is Windows-only)."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+    except Exception as ex:
+        print("open folder failed:", ex)
+
+
 class DVR(QObject):
     changed = pyqtSignal()
     play_file = pyqtSignal(str, str)
@@ -253,7 +264,7 @@ class DVRPanel(QDialog):
         lay.addWidget(self.tabs)
         row = QHBoxLayout()
         for text, fn in (("PLAY", self.play), ("STOP / CANCEL", self.stop),
-                         ("DELETE", self.delete), ("OPEN FOLDER", lambda: os.startfile(DIR))):
+                         ("DELETE", self.delete), ("OPEN FOLDER", lambda: _open_dir(DIR))):
             b = QPushButton(text)
             b.clicked.connect(fn)
             row.addWidget(b)

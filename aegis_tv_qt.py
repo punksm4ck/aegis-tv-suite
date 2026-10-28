@@ -1050,7 +1050,20 @@ class Main(QMainWindow):
         super().closeEvent(e)
 
 
+def _hook(et, ev, tb):
+    import traceback
+    msg = "".join(traceback.format_exception(et, ev, tb))
+    sys.stderr.write(msg)
+    try:
+        os.makedirs(CACHE, exist_ok=True)
+        with open(os.path.join(CACHE, "error.log"), "a", encoding="utf-8") as f:
+            f.write(time.strftime("%F %T ") + msg + "\n")
+    except OSError:
+        pass
+
+
 def main():
+    sys.excepthook = _hook
     app = QApplication(sys.argv)
     app.setApplicationName("AEGIS TV-OPS")
     app.setFont(QFont(MONO, 11))
