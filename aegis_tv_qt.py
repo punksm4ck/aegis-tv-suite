@@ -173,6 +173,7 @@ class Channel:
     site_id: str = ""
     progs: list = field(default_factory=list)
     in_lineup: bool = False
+    num: int = 0
 
 
 def now_prog(ch, t=None):
@@ -369,7 +370,14 @@ class GuidePanel(QWidget):
         now = time.time()
         self.t0 = int(now // (SLOT * 60)) * SLOT * 60
         span = HOURS * 60
-        W, H = span * PX_MIN, max(len(chans) * ROW_H, 1)
+        GRP_H = 22
+        runs, prev = 0, None
+        for _c in chans:
+            _k = (_c.group or 'Other').split(';')[0]
+            if _k != prev:
+                runs += 1
+                prev = _k
+        W, H = span * PX_MIN, max(len(chans) * ROW_H + runs * GRP_H, 1)
         self.H = H
         self.now_g = self.now_h = None
         for s in (self.head_scene, self.names_scene, self.grid_scene):
@@ -389,10 +397,30 @@ class GuidePanel(QWidget):
             ti.setBrush(QBrush(QColor(FG)))
             ti.setPos(x + 4, (HEAD_H - fm.height()) / 2)
             self.grid_scene.addLine(x, 0, x, H, pen_g)
+        ycur = 0
+        prev_grp = None
+        fb = type(self.font_)(self.font_)
+        fb.setBold(True)
+        band = QBrush(QColor('#0f0f16'))
         for r, ch in enumerate(chans):
-            y = r * ROW_H
-            cell = NameCell(ch, self.bus, NAME_W, ROW_H, self.font_)
-            cell.setPos(0, y)
+            grp = (ch.group or 'Other').split(';')[0]
+            if grp != prev_grp:
+                prev_grp = grp
+                for sc, w_ in ((self.names_scene, NAME_W), (self.grid_scene, W)):
+                    b = sc.addRect(0, ycur, w_, GRP_H, QPen(Qt.PenStyle.NoPen), band)
+                    b.setZValue(1)
+                gt = self.names_scene.addSimpleText(grp.upper(), fb)
+                gt.setBrush(QBrush(QColor(RED)))
+                gt.setPos(8, ycur + (GRP_H - fm.height()) / 2)
+                gt.setZValue(2)
+                ycur += GRP_H
+            y = ycur
+            ycur += ROW_H
+            nt = self.names_scene.addSimpleText(str(ch.num or ''), fb)
+            nt.setBrush(QBrush(QColor(RED)))
+            nt.setPos(6, y + (ROW_H - fm.height()) / 2)
+            cell = NameCell(ch, self.bus, NAME_W - 30, ROW_H, self.font_)
+            cell.setPos(30, y)
             self.names_scene.addItem(cell)
             self.names_scene.addLine(0, y + ROW_H, NAME_W, y + ROW_H, pen_g)
             self.grid_scene.addLine(0, y + ROW_H, W, y + ROW_H, pen_g)
@@ -874,6 +902,11 @@ class Main(QMainWindow):
                                url=safe_url(urlmap.get(norm(c["name"]), "")),
                                site_id=c.get("id", ""), progs=c.get("progs", []), in_lineup=True)
                        for c in self.site]
+        _cnt = {}
+        for c in self.lineup:
+            _k = (c.group or 'Other').split(';')[0]
+            _cnt[_k] = _cnt.get(_k, 0) + 1
+            c.num = _cnt[_k]
         seen = {norm(c.name) for c in self.lineup}
         self.other = []
         for c in self.user + self.avail:
@@ -905,7 +938,8 @@ class Main(QMainWindow):
 
     def refresh_groups(self):
         keep = self.group.currentText()
-        groups = sorted({c.group for c in self.pool() if c.group})
+        _lg = list(dict.fromkeys(c.group for c in self.lineup if c.group))
+        groups = _lg + sorted({c.group for c in self.pool() if c.group} - set(_lg))
         self.group.blockSignals(True)
         self.group.clear()
         self.group.addItems(["ALL"] + groups)
