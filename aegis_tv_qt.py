@@ -185,6 +185,37 @@ def now_prog(ch, t=None):
 
 
 # ----------------------------------------------------------------- loader
+LAST_FILE = os.path.join(CACHE, "last_channel.json")
+
+
+def save_last(ch):
+    import json
+    try:
+        os.makedirs(CACHE, mode=0o700, exist_ok=True)
+        with open(LAST_FILE + ".tmp", "w", encoding="utf-8") as f:
+            json.dump({"name": ch.name, "key": norm(ch.name), "url": ch.url}, f)
+        os.replace(LAST_FILE + ".tmp", LAST_FILE)
+    except OSError:
+        pass
+
+
+def load_last():
+    import json
+    try:
+        with open(LAST_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) and d.get("name") else None
+    except (OSError, ValueError):
+        return None
+
+
+def clear_last():
+    try:
+        os.remove(LAST_FILE)
+    except OSError:
+        pass
+
+
 class Loader(QThread):
     done = pyqtSignal(object)
 
@@ -704,6 +735,7 @@ class Main(QMainWindow):
         self.player.video.doubleClicked.connect(self.toggle_full)
         self.player.video.rightClicked.connect(self.toggle_overlay)
         self.player.btn_full.clicked.connect(self.toggle_full)
+        self.player.btn_stop.clicked.connect(lambda _c=False: clear_last())
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("search channels (Ctrl+F)")
@@ -887,6 +919,9 @@ class Main(QMainWindow):
         if out["site_stale"] or out["avail_stale"]:
             notes.append("OFFLINE: cached copy")
         self.info.setText(f"LINEUP {len(self.lineup)} ({withg} w/ guide)  AVAILABLE {len(self.avail)}")
+        if (self.lineup or self.other) and not getattr(self, "_resumed", False):
+            self._resumed = True
+            QTimer.singleShot(800, self.resume_last)
         if notes:
             self.statusBar().showMessage("  |  ".join(notes), 15000)
         elif out["avail_src"]:
@@ -986,7 +1021,24 @@ class Main(QMainWindow):
                 f"No direct stream URL for {ch.name}. Use LOAD M3U or the SITE button.", 8000)
             return
         self.statusBar().showMessage(f"Tuning {ch.name}...", 4000)
+        save_last(ch)
         self.player.play(ch.url, label)
+
+    def resume_last(self):
+        if os.environ.get("AEGIS_TV_RESUME", "1") == "0":
+            return
+        d = load_last()
+        if not d:
+            return
+        key = d.get("key") or norm(d.get("name", ""))
+        ch = next((c for c in self.lineup + self.other if norm(c.name) == key), None)
+        if ch is None:
+            url = safe_url(d.get("url", ""))
+            if not url:
+                return
+            ch = Channel(name=d["name"], url=url)
+        self.statusBar().showMessage("Resuming " + ch.name, 5000)
+        self.tune(ch)
 
     def on_hover(self, ch, p):
         if p:
