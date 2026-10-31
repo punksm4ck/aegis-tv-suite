@@ -107,7 +107,7 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
 (function () {
   var st = document.createElement('style');
   st.textContent =
-    '#tvGuideBtn{position:fixed;top:calc(12px + env(safe-area-inset-top,0px));left:calc(12px + env(safe-area-inset-left,0px));' +
+    '#tvGuideBtn{position:fixed;top:calc(64px + env(safe-area-inset-top,0px));left:calc(12px + env(safe-area-inset-left,0px));' +
     'z-index:40;min-width:40px;height:40px;padding:0 14px;display:flex;align-items:center;gap:8px;box-sizing:border-box;' +
     'border:0;border-radius:8px;background:rgba(20,22,30,.78);color:#e8e8ea;cursor:pointer;' +
     'font:600 13px ui-monospace,Menlo,Consolas,monospace;letter-spacing:.06em;' +
