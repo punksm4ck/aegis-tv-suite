@@ -284,8 +284,16 @@ app.post('/api/register', signupLimiter, jsonOnly, async (req, res) => {
 });
 app.post('/api/logout', (req, res) => { res.clearCookie(COOKIE_NAME, { path: '/' }); res.json({ ok: true }); });
 
+let dvr; // assigned below, before listen
 // everything below needs a session
-app.get('/', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'player.html')));
+app.get('/', requireAuth, (req, res) => {
+  if (!dvr.isAdmin(req.user)) return res.sendFile(path.join(PUBLIC_DIR, 'player.html'));
+  // admins get the DVR UI injected; everyone else gets the untouched page
+  fs.readFile(path.join(PUBLIC_DIR, 'player.html'), 'utf8', (e, html) => {
+    if (e) return res.status(500).type('text/plain').send('server error');
+    res.set('Cache-Control', 'no-store').type('html').send(html.replace('</body>', '<script src="/dvr-ui.js"></script></body>'));
+  });
+});
 app.get('/player.js', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'player.js')));
 
 app.get('/api/channels', requireAuth, (_req, res) => {
@@ -305,6 +313,9 @@ app.get('/p/:token', requireAuth, async (req, res) => {
   if (!url) return res.status(400).type('text/plain').send('bad token');
   await relay(url, req, res, false);
 });
+
+// ---------- DVR (admin only) ----------
+dvr = require('./dvr').mount(app, { requireAuth, jsonOnly, getPlaylist, dataDir: DATA_DIR, publicDir: PUBLIC_DIR });
 
 // ---------- guide (EPG) ----------
 const GUIDE_PATH = path.join(ROOT, 'guide.json');
