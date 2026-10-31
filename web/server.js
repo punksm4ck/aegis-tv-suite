@@ -159,11 +159,20 @@ async function upstreamFetch(url, req, { manifestHint }) {
   return res;
 }
 
+const upLogAt = new Map();
+function logUp(url, what) {   // logs the upstream host only (playlist URLs can carry tokens), at most once per 30s per message
+  let host = '?'; try { host = new URL(url).host; } catch (_) {}
+  const k = host + '|' + what, t = Date.now();
+  if (t - (upLogAt.get(k) || 0) < 30000) return;
+  upLogAt.set(k, t);
+  console.log('[tv] upstream ' + host + ': ' + what);
+}
+
 async function relay(url, req, res, manifestHint) {
   let up;
   try { up = await upstreamFetch(url, req, { manifestHint }); }
-  catch (e) { return res.status(502).type('text/plain').send('upstream unavailable'); }
-  if (!up.ok && up.status !== 206) return res.status(up.status === 404 ? 404 : 502).type('text/plain').send('upstream error ' + up.status);
+  catch (e) { logUp(url, 'fetch failed: ' + ((e && e.name) || '') + ' ' + ((e && e.message) || '')); return res.status(502).type('text/plain').send('upstream unavailable'); }
+  if (!up.ok && up.status !== 206) { logUp(url, 'HTTP ' + up.status); return res.status(up.status === 404 ? 404 : 502).type('text/plain').send('upstream error ' + up.status); }
 
   const ctype = (up.headers.get('content-type') || '').toLowerCase();
   const looksManifest = manifestHint || /mpegurl/.test(ctype) || /\.m3u8(\?|$)/i.test(url);
@@ -179,11 +188,12 @@ async function relay(url, req, res, manifestHint) {
   }
   res.status(up.status);
   res.set('Content-Type', /^(video|audio|image)\/|octet-stream/.test(ctype) ? ctype : 'video/mp2t');
-  const len = up.headers.get('content-length'); if (len) res.set('Content-Length', len);
+  // fetch() decompresses gzip/br bodies, so a forwarded Content-Length would be wrong (Cloudflare reports that as a 520)
+  const len = up.headers.get('content-length'); if (len && !up.headers.get('content-encoding')) res.set('Content-Length', len);
   const cr = up.headers.get('content-range'); if (cr) res.set('Content-Range', cr);
   if (!up.body) return res.end();
   const stream = Readable.fromWeb(up.body);
-  stream.on('error', () => res.destroy());
+  stream.on('error', (e) => { logUp(url, 'stream error: ' + ((e && e.message) || '')); res.destroy(); });
   res.on('close', () => stream.destroy());
   stream.pipe(res);
 }
@@ -252,6 +262,8 @@ const jsonOnly = (req, res, next) => (req.is('application/json') ? next() : res.
 app.get('/login', (req, res) => (currentUser(req) ? res.redirect('/') : res.sendFile(path.join(PUBLIC_DIR, 'login.html'))));
 app.get('/api/config', (_req, res) => res.json({ signup: ALLOW_SIGNUP, codeRequired: ALLOW_SIGNUP && !!SIGNUP_CODE }));
 app.get('/hls.min.js', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'hls.min.js')));
+const FAVICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#15181d"/><rect x="5" y="8" width="22" height="14" rx="2" fill="none" stroke="#6c7cff" stroke-width="2.5"/><path d="M12 26h8M16 22v4" stroke="#6c7cff" stroke-width="2.5" stroke-linecap="round"/></svg>';
+app.get(['/favicon.ico', '/favicon.svg'], (_req, res) => res.set('Cache-Control', 'public, max-age=86400').type('image/svg+xml').send(FAVICON));
 app.get('/login.js', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.js')));
 
 app.post('/api/login', authLimiter, jsonOnly, async (req, res) => {
