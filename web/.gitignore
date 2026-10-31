@@ -1,0 +1,6 @@
+data/
+node_modules/
+playlist.m3u*
+guide.json
+*.bak*
+*.check.js

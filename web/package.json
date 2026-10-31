@@ -1,0 +1,20 @@
+{
+  "name": "punksm4ck-tv",
+  "version": "1.0.0",
+  "description": "tv.punksm4ck.com live TV player",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.22.3",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  }
+}

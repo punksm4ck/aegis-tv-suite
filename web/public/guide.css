@@ -1,0 +1,23 @@
+#g-ov{position:fixed;inset:0;z-index:2147483000;background:#0b0b10;color:#e8e8f0;font:13px system-ui,sans-serif;display:flex;flex-direction:column}
+#g-bar{display:flex;gap:10px;align-items:center;padding:10px 14px;background:#14141c;border-bottom:1px solid #2a2a38}
+#g-bar b{font-size:16px;margin-right:auto}
+.g-stamp{color:#9a9ab0}
+#g-bar input,#g-bar select,#g-bar button{background:#1d1d29;color:inherit;border:1px solid #333346;border-radius:6px;padding:6px 10px;font:inherit}
+#g-body{flex:1;overflow:auto;position:relative}
+.g-grid{position:relative;width:max-content;min-width:100%}
+.g-row{display:flex;height:44px;border-bottom:1px solid #1c1c28}
+.g-row.cur .g-lab{background:#2a1019}
+.g-lab{position:sticky;left:0;z-index:3;flex:0 0 190px;width:190px;box-sizing:border-box;background:#14141c;padding:0 10px;display:flex;align-items:center;gap:8px;cursor:pointer;border-right:1px solid #2a2a38;overflow:hidden;white-space:nowrap}
+.g-lab i{font-style:normal;color:#e11d48;font-weight:700;min-width:22px}
+.g-trk{position:relative;flex:none;width:17280px}
+.g-p{position:absolute;top:3px;bottom:3px;box-sizing:border-box;background:#22222f;border-radius:5px;padding:3px 8px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;border:1px solid #2f2f40}
+.g-p:hover{background:#2e2e44}
+.g-p.now{background:#3b1220;border-color:#e11d48}
+.g-p.none{opacity:.5}
+.g-p small{display:block;color:#9a9ab0}
+.g-grp{position:sticky;left:0;height:26px;line-height:26px;padding:0 10px;background:#0f0f16;color:#e11d48;font-weight:700;letter-spacing:.06em;text-transform:uppercase;width:100vw;box-sizing:border-box}
+.g-head{position:sticky;top:0;z-index:5;background:#14141c;height:30px}
+.g-head .g-lab{height:30px;cursor:default}
+.g-tick{position:absolute;top:0;height:30px;line-height:30px;padding-left:6px;border-left:1px solid #2a2a38;color:#9a9ab0;box-sizing:border-box;width:120px}
+#g-now{position:absolute;top:0;bottom:0;width:2px;background:#e11d48;z-index:2;pointer-events:none}
+.g-open{margin:8px;padding:6px 12px;border:0;border-radius:6px;background:#e11d48;color:#fff;font:600 13px system-ui,sans-serif;cursor:pointer}

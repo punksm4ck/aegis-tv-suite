@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in - Live TV</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid; place-items: center; padding: 16px; background: #0b0c10; color: #e8e8ea;
+    font: 15px/1.4 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  main { width: min(360px, 100%); }
+  h1 { margin: 0 0 4px; font-size: 22px; font-weight: 650; }
+  p.sub { margin: 0 0 22px; color: #8a8d98; }
+  form { display: grid; gap: 12px; }
+  label { display: grid; gap: 6px; font-size: 13px; color: #aeb1bc; }
+  input {
+    padding: 11px 12px; border-radius: 8px; border: 1px solid #2f313a; background: #14151a;
+    color: #fff; font: inherit; outline: none;
+  }
+  input:focus { border-color: #6d8cff; }
+  button {
+    padding: 11px 12px; border: 0; border-radius: 8px; background: #5b7cff;
+    color: #fff; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .6; cursor: default; }
+  button.secondary { background: transparent; border: 1px solid #353844; color: #cfd2dc; }
+  button.secondary:hover { border-color: #6d8cff; color: #fff; }
+  .err { min-height: 20px; color: #ff8a8a; font-size: 13px; }
+  #open { display: none; width: 100%; margin-top: 10px; }
+  #signupInfo { margin: 14px 0 0; font-size: 12px; color: #6f7280; text-align: center; display: none; }
+
+  dialog {
+    width: min(400px, calc(100vw - 32px)); padding: 24px; border: 1px solid #2b2d34; border-radius: 14px;
+    background: #16171b; color: #e8e8ea; box-shadow: 0 24px 60px rgba(0,0,0,.6);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.65); }
+  dialog h2 { margin: 0 0 4px; font-size: 19px; font-weight: 650; }
+  dialog p.sub { margin: 0 0 18px; font-size: 13px; }
+  .hint { font-size: 12px; color: #6f7280; }
+  .hint.bad { color: #ff8a8a; }
+  .hint.ok { color: #7bd88f; }
+  .row { display: flex; gap: 10px; margin-top: 4px; }
+  .row button { flex: 1; }
+  #codeWrap { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Live TV</h1>
+  <p class="sub">Sign in to watch.</p>
+  <form id="f" autocomplete="on">
+    <label>Username<input id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+    <label>Password<input id="p" name="password" type="password" autocomplete="current-password" required></label>
+    <div class="err" id="err" role="alert"></div>
+    <button id="go" type="submit">Sign in</button>
+  </form>
+  <button id="open" class="secondary" type="button">Create user</button>
+</main>
+
+<dialog id="dlg" aria-labelledby="dlgTitle">
+  <form id="cf" method="dialog" autocomplete="off">
+    <h2 id="dlgTitle">Create user</h2>
+    <p class="sub">Make a login for Live TV.</p>
+    <div style="display:grid;gap:12px">
+      <label>Username<input id="cu" autocapitalize="none" spellcheck="false" maxlength="32" required>
+        <span class="hint" id="uHint">3-32 letters, numbers, . _ -</span></label>
+      <label>Password<input id="cp" type="password" autocomplete="new-password" maxlength="200" required>
+        <span class="hint" id="pHint">At least 10 characters</span></label>
+      <label>Confirm password<input id="cc" type="password" autocomplete="new-password" maxlength="200" required>
+        <span class="hint" id="cHint"></span></label>
+      <label id="codeWrap">Invite code<input id="ci" autocomplete="off" spellcheck="false" maxlength="100"></label>
+      <div class="err" id="cerr" role="alert"></div>
+      <div class="row">
+        <button type="button" class="secondary" id="cancel">Cancel</button>
+        <button type="submit" id="create">Create account</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+<script src="/login.js"></script>
+</body>
+</html>
