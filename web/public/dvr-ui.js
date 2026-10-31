@@ -73,6 +73,53 @@
       if (panel.style.display === 'block') { placePanel(); render(); }
     });
     var list = el('div');
+    var recBtn = null, recJobId = null;
+    function recLabel(on) {
+      if (!recBtn) return;
+      recBtn.textContent = on ? '\u25A0 STOP' : '\u25CF REC';
+    }
+    function recRefresh() {
+      return api('/api/dvr/jobs').then(function (jobs) {
+        var j = jobs.filter(function (x) { return x.status === 'recording' && x.channelId === cur.id; })[0];
+        recJobId = j ? j.id : null;
+        recLabel(!!j);
+      }).catch(function () {});
+    }
+    function recFlash(msg) {
+      if (!recBtn) return;
+      recBtn.textContent = msg;
+      setTimeout(function () { recRefresh().then(function () { if (!recJobId) recLabel(false); }); }, 2500);
+    }
+    function recClick() {
+      if (recJobId) {
+        api('/api/dvr/stop', { id: recJobId }).then(function () { setTimeout(recRefresh, 600); }).catch(function (e) { recFlash(e.message); });
+        return;
+      }
+      if (!cur.id) { recFlash('NO CHANNEL'); return; }
+      var ch = channels[cur.id];
+      api('/api/dvr/record', { channelId: cur.id, title: ch ? ch.name : 'Live TV', minutes: 60 })
+        .then(function () { recFlash('RECORDING'); })
+        .catch(function (e) { recFlash(e.message); });
+    }
+    function recMount() {
+      var b = document.getElementById('ts');
+      if (!b || (recBtn && recBtn.parentNode === b)) return;
+      if (!recBtn) {
+        recBtn = document.createElement('button');
+        recBtn.type = 'button';
+        recBtn.setAttribute('aria-label', 'Record this channel');
+        recBtn.style.fontWeight = '700';
+        recBtn.style.letterSpacing = '.06em';
+        recBtn.style.color = '#ff5d5d';
+        recBtn.onclick = function (e) { e.stopPropagation(); recClick(); };
+        recLabel(false);
+      }
+      b.appendChild(recBtn);
+    }
+    recMount();
+    setInterval(recMount, 3000);
+    setInterval(recRefresh, 10000);
+    recRefresh();
     function render() {
       api('/api/dvr/jobs').then(function (jobs) {
         list.textContent = '';
