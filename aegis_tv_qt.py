@@ -622,6 +622,15 @@ class Player(QWidget):
         self.url, self.label, self.inst, self.mp = "", "", None, None
         self.ok = False
         self.live_url, self.live_label, self._paused_at = '', '', 0.0
+        self.ts_active, self._ts_uri, self._ts_path = False, '', ''
+        self._ts_rec, self._ts_inst, self._ts_t0 = None, None, 0.0
+        try:
+            import glob, tempfile
+            for _f in glob.glob(os.path.join(tempfile.gettempdir(), 'aegis_timeshift', 'aegis_ts_*.ts')):
+                if time.time() - os.path.getmtime(_f) > 86400:
+                    os.remove(_f)
+        except Exception:
+            pass
         self.video = VideoFrame()
         self.video.setStyleSheet("background: #000;")
         self.video.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
@@ -680,6 +689,8 @@ class Player(QWidget):
             self.mp.set_xwindow(wid)
 
     def play(self, url, label):
+        if str(url) != self._ts_uri:
+            self._ts_reset()
         self.url, self.label = url, label
         if not str(url).startswith('file:'):
             self.live_url, self.live_label = url, label
@@ -718,7 +729,18 @@ class Player(QWidget):
                  vlc.State.Playing: "ON AIR", vlc.State.Paused: "PAUSED",
                  vlc.State.Stopped: "STOPPED", vlc.State.Ended: "STREAM ENDED",
                  vlc.State.Error: "STREAM ERROR (dead or geo-blocked URL?)"}
-        self.info.setText(f"{names.get(st, str(st))}: {self.label}")
+        tag = names.get(st, str(st))
+        if self.ts_active:
+            behind = max(0, int((time.time() - self._ts_t0) - self.mp.get_time() / 1000.0))
+            tag = "PAUSED (timeshift)" if st == vlc.State.Paused else "TIMESHIFT -%d:%02d" % (behind // 60, behind % 60)
+            if st in (vlc.State.Ended, vlc.State.Error):
+                self.go_live()
+                return
+        elif st == vlc.State.Paused and self._ts_rec is not None:
+            tag = "PAUSED (buffering live)"
+        if self._ts_rec is not None and time.time() - self._ts_t0 > self.TS_MAX_SEC:
+            self._ts_stop_rec()
+        self.info.setText(f"{tag}: {self.label}")
         self.btn_pause.setText("RESUME" if st == vlc.State.Paused else "PAUSE")
         if st in (vlc.State.Error, vlc.State.Ended, vlc.State.Stopped):
             self.poll.stop()
@@ -735,21 +757,81 @@ class Player(QWidget):
         else:
             self.pause_now()
 
+    TS_MIN_SEC = 12      # shorter pauses just un-pause the live stream
+    TS_MAX_SEC = 3600    # stop writing the timeshift file after an hour
+
+    def _ts_instance(self):
+        if self._ts_inst is None:
+            self._ts_inst = vlc.Instance("--quiet", "--no-video", "--no-stats")
+        return self._ts_inst
+
+    def _ts_start_rec(self):
+        import tempfile
+        d = os.path.join(tempfile.gettempdir(), "aegis_timeshift")
+        os.makedirs(d, exist_ok=True)
+        self._ts_path = os.path.join(d, "aegis_ts_%d_%d.ts" % (os.getpid(), int(time.time())))
+        try:
+            inst = self._ts_instance()
+            m = inst.media_new(self.live_url)
+            m.add_option(':sout=#std{access=file,mux=ts,dst="%s"}' % self._ts_path.replace("\\", "/"))
+            m.add_option(":sout-keep")
+            rec = inst.media_player_new()
+            rec.set_media(m)
+            rec.play()
+            self._ts_rec, self._ts_t0 = rec, time.time()
+        except Exception as ex:
+            print("timeshift recorder:", ex)
+            self._ts_rec = None
+
+    def _ts_stop_rec(self):
+        rec, self._ts_rec = self._ts_rec, None
+        if rec is not None:
+            try:
+                rec.stop()
+                rec.release()
+            except Exception:
+                pass
+
+    def _ts_reset(self):
+        self._ts_stop_rec()
+        self.ts_active, self._ts_uri = False, ""
+        path, self._ts_path = self._ts_path, ""
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
     def pause_now(self):
         self._paused_at = time.time()
+        live = (not self.ts_active) and self.live_url and not str(self.url).startswith("file:")
+        if live and self._ts_rec is None:
+            self._ts_start_rec()
         self.mp.set_pause(1)
-        self.btn_pause.setText('RESUME')
+        self.btn_pause.setText("RESUME")
 
     def resume(self):
+        waited = time.time() - self._paused_at
+        if (not self.ts_active) and self._ts_rec is not None:
+            if (waited >= self.TS_MIN_SEC and os.path.exists(self._ts_path)
+                    and os.path.getsize(self._ts_path) > 100000):
+                from pathlib import Path
+                self._ts_uri = Path(self._ts_path).as_uri()
+                self.play(self._ts_uri, self.live_label or self.label)
+                self.ts_active = True
+                return
+            self._ts_reset()   # short pause: plain un-pause on the live stream
         self.mp.set_pause(0)
-        self.btn_pause.setText('PAUSE')
+        self.btn_pause.setText("PAUSE")
 
     def go_live(self):
-        url = self.live_url or (self.url if not str(self.url).startswith('file:') else '')
+        url = self.live_url
+        self._ts_reset()
         if url:
             self.play(url, self.live_label or self.label)
 
     def stop(self):
+        self._ts_reset()
         self.poll.stop()
         if self.ok:
             self.mp.stop()
@@ -769,6 +851,7 @@ class Player(QWidget):
             external_open(self.url)
 
     def shutdown(self):
+        self._ts_reset()
         self.poll.stop()
         try:
             if self.ok:
