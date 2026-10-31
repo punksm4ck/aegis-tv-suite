@@ -286,12 +286,13 @@ app.post('/api/logout', (req, res) => { res.clearCookie(COOKIE_NAME, { path: '/'
 
 let dvr; // assigned below, before listen
 // everything below needs a session
+app.get('/video-click.js', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'video-click.js')));
 app.get('/', requireAuth, (req, res) => {
-  if (!dvr.isAdmin(req.user)) return res.sendFile(path.join(PUBLIC_DIR, 'player.html'));
-  // admins get the DVR UI injected; everyone else gets the untouched page
   fs.readFile(path.join(PUBLIC_DIR, 'player.html'), 'utf8', (e, html) => {
     if (e) return res.status(500).type('text/plain').send('server error');
-    res.set('Cache-Control', 'no-store').type('html').send(html.replace('</body>', '<script src="/dvr-ui.js"></script></body>'));
+    // everyone gets click-to-resume; only admins also get the DVR UI
+    const tags = '<script src="/video-click.js"></script>' + (dvr.isAdmin(req.user) ? '<script src="/dvr-ui.js"></script>' : '');
+    res.set('Cache-Control', 'no-store').type('html').send(html.replace('</body>', tags + '</body>'));
   });
 });
 app.get('/player.js', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'player.js')));
