@@ -244,6 +244,70 @@ def push_recent(ch):
         pass
 
 
+FAV_FILE = os.path.join(CACHE, "favorites.json")
+SET_FILE = os.path.join(CACHE, "settings.json")
+FAV_LABEL = "\u2605 FAVORITES"
+
+
+def _read_json(path, default):
+    import json
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def _write_json(path, data):
+    import json
+    try:
+        os.makedirs(CACHE, mode=0o700, exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+
+
+def load_settings():
+    d = _read_json(SET_FILE, {})
+    return d if isinstance(d, dict) else {}
+
+
+def save_setting(key, value):
+    s = load_settings()
+    s[key] = value
+    _write_json(SET_FILE, s)
+
+
+def saved_volume():
+    try:
+        return max(0, min(100, int(load_settings().get("volume", 100))))
+    except (TypeError, ValueError):
+        return 100
+
+
+_fv = _read_json(FAV_FILE, [])
+FAVS = {k for k in _fv if isinstance(k, str)} if isinstance(_fv, list) else set()
+
+
+def is_fav(ch):
+    return norm(ch.name) in FAVS
+
+
+def toggle_fav(ch):
+    """Flip favorite state (stored as normalized names, same keys as the web player). Returns new state."""
+    k = norm(ch.name)
+    if not k:
+        return False
+    if k in FAVS:
+        FAVS.discard(k)
+    else:
+        FAVS.add(k)
+    _write_json(FAV_FILE, sorted(FAVS))
+    return k in FAVS
+
+
 def clear_last():
     try:
         os.remove(LAST_FILE)
@@ -280,6 +344,7 @@ class Loader(QThread):
 class Bus(QObject):
     tune = pyqtSignal(object)
     hover = pyqtSignal(object, object)
+    fav = pyqtSignal(object)
 
 
 class NameCell(QGraphicsRectItem):
@@ -289,9 +354,10 @@ class NameCell(QGraphicsRectItem):
         self.setPen(QPen(Qt.PenStyle.NoPen))
         self.setBrush(QBrush(QColor(PANEL)))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(ch.name)
+        self.setToolTip(ch.name + "\n(right-click: toggle favorite)")
         fm = QFontMetrics(font)
-        t = QGraphicsSimpleTextItem(fm.elidedText(ch.name, Qt.TextElideMode.ElideRight, int(w - 14)), self)
+        label = ("\u2605 " if is_fav(ch) else "") + ch.name
+        t = QGraphicsSimpleTextItem(fm.elidedText(label, Qt.TextElideMode.ElideRight, int(w - 14)), self)
         t.setFont(font)
         t.setBrush(QBrush(QColor(FG if ch.url else DIM)))
         t.setPos(8, (h - fm.height()) / 2)
@@ -300,6 +366,10 @@ class NameCell(QGraphicsRectItem):
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             self.bus.tune.emit(self.ch)
+        e.accept()
+
+    def contextMenuEvent(self, e):
+        self.bus.fav.emit(self.ch)
         e.accept()
 
 
@@ -385,6 +455,7 @@ class GuidePanel(QWidget):
         self.bus = bus
         self.font_ = QFont(MONO, 10)
         self.t0, self.H = 0, 1
+        self.name_cells, self.cur_key = {}, ""
         self.now_g = self.now_h = None
         self.head_scene, self.names_scene, self.grid_scene = QGraphicsScene(), QGraphicsScene(), QGraphicsScene()
         self.grid_view = QGraphicsView(self.grid_scene)
@@ -446,6 +517,7 @@ class GuidePanel(QWidget):
         W, H = span * PX_MIN, max(len(chans) * ROW_H + runs * GRP_H, 1)
         self.H = H
         self.now_g = self.now_h = None
+        self.name_cells = {}
         for s in (self.head_scene, self.names_scene, self.grid_scene):
             s.clear()
         self.head_scene.setSceneRect(0, 0, W, HEAD_H)
@@ -488,6 +560,7 @@ class GuidePanel(QWidget):
             cell = NameCell(ch, self.bus, NAME_W - 30, ROW_H, self.font_)
             cell.setPos(30, y)
             self.names_scene.addItem(cell)
+            self.name_cells.setdefault(norm(ch.name), cell)
             self.names_scene.addLine(0, y + ROW_H, NAME_W, y + ROW_H, pen_g)
             self.grid_scene.addLine(0, y + ROW_H, W, y + ROW_H, pen_g)
             if not ch.progs:
@@ -511,6 +584,12 @@ class GuidePanel(QWidget):
         self.now_h.setZValue(10)
         self.update_now_line()
         self.jump_now()
+        self.set_current(self.cur_key)
+
+    def set_current(self, key):
+        self.cur_key = key or ""
+        for k, cell in self.name_cells.items():
+            cell.setBrush(QBrush(QColor(AIR if k == self.cur_key else PANEL)))
 
     def update_now_line(self):
         if self.now_g is None:
@@ -529,6 +608,7 @@ class GuidePanel(QWidget):
 class VideoFrame(QFrame):
     doubleClicked = pyqtSignal()
     rightClicked = pyqtSignal()
+    wheeled = pyqtSignal(int)
 
     def mouseDoubleClickEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
@@ -538,6 +618,12 @@ class VideoFrame(QFrame):
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.RightButton:
             self.rightClicked.emit()
+        e.accept()
+
+    def wheelEvent(self, e):
+        d = e.angleDelta().y()
+        if d:
+            self.wheeled.emit(1 if d > 0 else -1)
         e.accept()
 
 
@@ -553,7 +639,7 @@ class ChannelOverlay(QWidget):
         box = QFrame(self)
         box.setObjectName("ovlbox")
         self.q = QLineEdit()
-        self.q.setPlaceholderText("recent channels - type to search all  (Esc closes)")
+        self.q.setPlaceholderText("favorites + recent - type to search all  (right-click = star, Esc closes)")
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setRootIsDecorated(False)
@@ -573,6 +659,14 @@ class ChannelOverlay(QWidget):
         self.q.returnPressed.connect(self.pick_current)
         self.tree.itemClicked.connect(lambda it, _c: self.pick(it))
         self.tree.itemActivated.connect(lambda it, _c: self.pick(it))
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._toggle_at)
+
+    def _toggle_at(self, pos):
+        it = self.tree.itemAt(pos)
+        if it is not None:
+            toggle_fav(it.data(0, Qt.ItemDataRole.UserRole))
+            self.fill()
 
     def open_with(self, chans):
         self.chans = [c for c in chans if c.url]
@@ -591,10 +685,12 @@ class ChannelOverlay(QWidget):
             byk = {}
             for c in self.chans:
                 byk.setdefault(norm(c.name), c)
-            src = [byk[k] for k in load_recent() if k in byk] or list(self.chans)
+            favs = [byk[k] for k in sorted(FAVS) if k in byk]
+            rec = [byk[k] for k in load_recent() if k in byk and k not in FAVS]
+            src = (favs + rec) or list(self.chans)
         for c in src:
             p = now_prog(c)
-            it = QTreeWidgetItem([c.name, p["t"] if p else ""])
+            it = QTreeWidgetItem([("\u2605 " if is_fav(c) else "") + c.name, p["t"] if p else ""])
             it.setData(0, Qt.ItemDataRole.UserRole, c)
             self.tree.addTopLevelItem(it)
 
@@ -643,7 +739,11 @@ class Player(QWidget):
         self.btn_full = QPushButton("FULLSCREEN (F11)")
         self.vol = QSlider(Qt.Orientation.Horizontal)
         self.vol.setRange(0, 100)
-        self.vol.setValue(100)
+        self.vol.setValue(saved_volume())
+        self._vol_t = QTimer(self)
+        self._vol_t.setSingleShot(True)
+        self._vol_t.setInterval(600)
+        self._vol_t.timeout.connect(lambda: save_setting("volume", self.vol.value()))
         self.vol.setFixedWidth(120)
         self.btn_pause.clicked.connect(self.toggle_pause)
         self.btn_live.clicked.connect(self.go_live)
@@ -927,6 +1027,10 @@ class Player(QWidget):
     def set_volume(self, v):
         if self.ok:
             self.mp.audio_set_volume(v)
+        self._vol_t.start()
+
+    def bump_volume(self, d):
+        self.vol.setValue(max(0, min(100, self.vol.value() + d)))
 
     def pop_out(self):
         if self.url:
@@ -964,11 +1068,14 @@ class Main(QMainWindow):
         self.overlay.chosen.connect(self.tune)
         self.player.video.doubleClicked.connect(self.toggle_full)
         self.player.video.rightClicked.connect(self.toggle_overlay)
+        self.player.video.wheeled.connect(lambda s: self.bump_volume(5 * s))
+        self.player.video.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.bus.fav.connect(self.on_fav)
         self.player.btn_full.clicked.connect(self.toggle_full)
         pass  # STOP button removed (GO LIVE replaces it); last channel is kept for resume
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText("search channels (Ctrl+F)")
+        self.search.setPlaceholderText("search channels or shows (Ctrl+F)")
         self.group = QComboBox()
         self.group.addItem("ALL")
         self.lineup_only = QCheckBox("LINEUP ONLY")
@@ -985,6 +1092,8 @@ class Main(QMainWindow):
         self.tree.itemActivated.connect(lambda it, _c: self.tune(it.data(0, Qt.ItemDataRole.UserRole)))
         self.tree.header().setSectionsClickable(True)  # HDR SORT
         self.tree.header().sectionClicked.connect(self._on_header_sort)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._tree_menu)
         self.info = QLabel("LOADING...")
         self.info.setObjectName("info")
         self.statusBar().addPermanentWidget(self.info)
@@ -1056,6 +1165,11 @@ class Main(QMainWindow):
         for key, fn in (("F2", self.toggle_guide), ("F3", self.guide.jump_now),
                         ("F4", self.player.toggle_mute), ("F5", self.refresh),
                         ("F11", self.toggle_full), ("F6", self.toggle_overlay), ("Esc", self.leave_full),
+                        ("F1", self.show_keys), ("Ctrl+D", self.fav_current),
+                        ("Ctrl+Up", lambda: self.bump_volume(5)), ("Ctrl+Down", lambda: self.bump_volume(-5)),
+                        ("M", self._unless_typing(self.player.toggle_mute)),
+                        ("F", self._unless_typing(self.toggle_full)),
+                        ("G", self._unless_typing(self.toggle_guide)),
                         ("Ctrl+F", lambda: (self.search.setFocus(), self.search.selectAll()))):
             QShortcut(QKeySequence(key), self).activated.connect(fn)
 
@@ -1064,6 +1178,61 @@ class Main(QMainWindow):
         self.clock.timeout.connect(self.tick)
         self.clock.start()
         self.refresh()
+
+    def _unless_typing(self, fn):
+        def wrapped():
+            w = QApplication.focusWidget()
+            if isinstance(w, (QLineEdit, QTreeWidget, QComboBox)):
+                return
+            fn()
+        return wrapped
+
+    def show_keys(self):
+        self.statusBar().showMessage(
+            "F2/G guide  F3 now  F4/M mute  F5 refresh  F6 channels  F11/F fullscreen  "
+            "Ctrl+D favorite  Ctrl+Up/Down volume  wheel on video = volume  "
+            "right-click a channel = favorite  F7/F8 DVR  Ctrl+F search", 15000)
+
+    def bump_volume(self, d):
+        self.player.bump_volume(d)
+        self.statusBar().showMessage("Volume %d%%" % self.player.vol.value(), 2000)
+
+    def on_fav(self, ch):
+        if ch is None:
+            return
+        on = toggle_fav(ch)
+        self.statusBar().showMessage(("Added to favorites: " if on else "Removed from favorites: ") + ch.name, 4000)
+        self.apply_filter()
+
+    def fav_current(self):
+        ch = getattr(self, "cur_ch", None)
+        if ch is None:
+            self.statusBar().showMessage("Tune a channel first", 3000)
+            return
+        self.on_fav(ch)
+
+    def _tree_menu(self, pos):
+        it = self.tree.itemAt(pos)
+        ch = it.data(0, Qt.ItemDataRole.UserRole) if it is not None else None
+        if ch is None:
+            return
+        from PyQt6.QtWidgets import QMenu
+        m = QMenu(self)
+        act = m.addAction("Remove from favorites" if is_fav(ch) else "Add to favorites")
+        if m.exec(self.tree.viewport().mapToGlobal(pos)) == act:
+            self.on_fav(ch)
+
+    def _group_ok(self, c, g):
+        if g == "ALL":
+            return True
+        if g == FAV_LABEL:
+            return is_fav(c)
+        return c.group == g
+
+    def _match(self, c, q):
+        if not q or q in c.name.lower():
+            return True
+        return any(q in (p.get("t") or "").lower() for p in c.progs)
 
     def _dvr_play(self, path, label):
         from pathlib import Path
@@ -1210,7 +1379,7 @@ class Main(QMainWindow):
         groups.sort(key=grp_rank)
         self.group.blockSignals(True)
         self.group.clear()
-        self.group.addItems(["ALL"] + groups)
+        self.group.addItems(["ALL", FAV_LABEL] + groups)
         i = self.group.findText(keep)
         self.group.setCurrentIndex(i if i >= 0 else 0)
         self.group.blockSignals(False)
@@ -1221,13 +1390,13 @@ class Main(QMainWindow):
 
     def apply_filter(self):
         q, g = self.search.text().lower().strip(), self.group.currentText()
-        vis = [c for c in self.pool() if (g == "ALL" or c.group == g) and q in c.name.lower()]
+        vis = [c for c in self.pool() if self._group_ok(c, g) and self._match(c, q)]
         vis.sort(key=lambda c: grp_rank(c.group))
         self.tree.setUpdatesEnabled(False)
         self.tree.clear()
         for c in self._sorted_vis(vis):
             p = now_prog(c)
-            it = QTreeWidgetItem([c.name, c.group, p["t"] if p else ""])
+            it = QTreeWidgetItem([("\u2605 " if is_fav(c) else "") + c.name, c.group, p["t"] if p else ""])
             it.setData(0, Qt.ItemDataRole.UserRole, c)
             if not c.url:
                 it.setForeground(0, QBrush(QColor(DIM)))
@@ -1288,6 +1457,8 @@ class Main(QMainWindow):
         self.statusBar().showMessage(f"Tuning {ch.name}...", 4000)
         save_last(ch)
         push_recent(ch)
+        self.cur_ch = ch
+        self.guide.set_current(norm(ch.name))
         self.player.play(ch.url, label)
 
     def resume_last(self):
