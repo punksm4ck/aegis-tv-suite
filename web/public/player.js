@@ -306,7 +306,7 @@
   function reveal() {
     box.classList.add('show');
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(function () { if (hasActivation()) box.classList.remove('show'); }, 3000);
+    hideTimer = setTimeout(function () { if (hasActivation()) box.classList.remove('show'); }, 4000);
   }
   function setVol(v) {
     vol = Math.max(0, Math.min(1, v));
@@ -600,7 +600,7 @@
     box.classList.toggle('show', showIt);
     renderBar(showIt);
   }
-  function reveal() { activeUntil = Date.now() + 3000; render(); }
+  function reveal() { activeUntil = Date.now() + 4000; render(); }
 
   // ---- actions ----
   function goLive() {
