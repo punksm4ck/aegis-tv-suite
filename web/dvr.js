@@ -84,7 +84,7 @@ function mount(app, { requireAuth, jsonOnly, getPlaylist, dataDir, publicDir }) 
   function start(j) {
     if (active.has(j.id)) return;
     if (active.size >= MAX_CONCURRENT) return;
-    j.path = uniquePath(j); j.parts = [j.path]; j.status = 'recording';
+    j.path = uniquePath(j); j.parts = (j.parts || []).concat(j.path); j.status = 'recording';
     if (!launch(j)) active.delete(j.id);
     save();
   }
