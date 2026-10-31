@@ -621,13 +621,14 @@ class Player(QWidget):
         super().__init__()
         self.url, self.label, self.inst, self.mp = "", "", None, None
         self.ok = False
+        self.live_url, self.live_label, self._paused_at = '', '', 0.0
         self.video = VideoFrame()
         self.video.setStyleSheet("background: #000;")
         self.video.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.video.setMinimumSize(320, 180)
         self.info = QLabel("STANDBY")
         self.info.setObjectName("info")
-        self.btn_pause, self.btn_stop = QPushButton("PAUSE"), QPushButton("STOP")
+        self.btn_pause, self.btn_live = QPushButton("PAUSE"), QPushButton("GO LIVE")
         self.btn_mute, self.btn_pop = QPushButton("MUTE (F4)"), QPushButton("POP OUT")
         self.btn_full = QPushButton("FULLSCREEN (F11)")
         self.vol = QSlider(Qt.Orientation.Horizontal)
@@ -635,13 +636,13 @@ class Player(QWidget):
         self.vol.setValue(100)
         self.vol.setFixedWidth(120)
         self.btn_pause.clicked.connect(self.toggle_pause)
-        self.btn_stop.clicked.connect(self.stop)
+        self.btn_live.clicked.connect(self.go_live)
         self.btn_mute.clicked.connect(self.toggle_mute)
         self.btn_pop.clicked.connect(self.pop_out)
         self.vol.valueChanged.connect(self.set_volume)
         bar = QHBoxLayout()
         bar.setContentsMargins(6, 4, 6, 4)
-        for w in (self.btn_pause, self.btn_stop, self.btn_mute, self.vol, self.btn_full, self.btn_pop):
+        for w in (self.btn_pause, self.btn_live, self.btn_mute, self.vol, self.btn_full, self.btn_pop):
             bar.addWidget(w)
         bar.addStretch()
         lay = QVBoxLayout(self)
@@ -650,7 +651,7 @@ class Player(QWidget):
         lay.addWidget(self.info)
         lay.addWidget(self.video, 1)
         lay.addLayout(bar)
-        self.chrome = [self.info, self.btn_pause, self.btn_stop, self.btn_mute,
+        self.chrome = [self.info, self.btn_pause, self.btn_live, self.btn_mute,
                        self.vol, self.btn_full, self.btn_pop]
         self.poll = QTimer(self)
         self.poll.setInterval(1000)
@@ -680,6 +681,9 @@ class Player(QWidget):
 
     def play(self, url, label):
         self.url, self.label = url, label
+        if not str(url).startswith('file:'):
+            self.live_url, self.live_label = url, label
+        self.btn_pause.setText('PAUSE')
         if not self.ok:
             external_open(url)
             self.info.setText("EXTERNAL VLC: " + label)
@@ -715,6 +719,7 @@ class Player(QWidget):
                  vlc.State.Stopped: "STOPPED", vlc.State.Ended: "STREAM ENDED",
                  vlc.State.Error: "STREAM ERROR (dead or geo-blocked URL?)"}
         self.info.setText(f"{names.get(st, str(st))}: {self.label}")
+        self.btn_pause.setText("RESUME" if st == vlc.State.Paused else "PAUSE")
         if st in (vlc.State.Error, vlc.State.Ended, vlc.State.Stopped):
             self.poll.stop()
 
@@ -723,8 +728,26 @@ class Player(QWidget):
             w.setVisible(visible)
 
     def toggle_pause(self):
-        if self.ok:
-            self.mp.pause()
+        if not self.ok:
+            return
+        if self.mp.get_state() == vlc.State.Paused:
+            self.resume()
+        else:
+            self.pause_now()
+
+    def pause_now(self):
+        self._paused_at = time.time()
+        self.mp.set_pause(1)
+        self.btn_pause.setText('RESUME')
+
+    def resume(self):
+        self.mp.set_pause(0)
+        self.btn_pause.setText('PAUSE')
+
+    def go_live(self):
+        url = self.live_url or (self.url if not str(self.url).startswith('file:') else '')
+        if url:
+            self.play(url, self.live_label or self.label)
 
     def stop(self):
         self.poll.stop()
@@ -776,7 +799,7 @@ class Main(QMainWindow):
         self.player.video.doubleClicked.connect(self.toggle_full)
         self.player.video.rightClicked.connect(self.toggle_overlay)
         self.player.btn_full.clicked.connect(self.toggle_full)
-        self.player.btn_stop.clicked.connect(lambda _c=False: clear_last())
+        pass  # STOP button removed (GO LIVE replaces it); last channel is kept for resume
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("search channels (Ctrl+F)")
