@@ -35,18 +35,17 @@
     if (pos && typeof pos.x === 'number') { wrap.style.left = pos.x + 'px'; wrap.style.top = pos.y + 'px'; }
     else { wrap.style.left = Math.max(0, window.innerWidth - (wrap.offsetWidth || 80) - 16) + 'px'; wrap.style.top = (window.innerWidth <= 640 ? 56 : 62) + 'px'; }
     clamp(); window.addEventListener('resize', clamp);
-    var recIdle = null, REC_IDLE_MS = 3000;
+    var gb = document.getElementById('tvGuideBtn'), recHold = null;
     wrap.style.transition = 'opacity .25s';
-    function recSleep() {
-      if (drag || panel.style.display === 'block' || wrap.matches(':hover')) { recIdle = setTimeout(recSleep, 1000); return; }
-      wrap.style.opacity = '0'; wrap.style.pointerEvents = 'none';
+    function recSet(on) {
+      clearTimeout(recHold);
+      if (!on && (drag || panel.style.display === 'block' || wrap.matches(':hover'))) { recHold = setTimeout(function () { recSet(gb.classList.contains('show')); }, 1000); return; }
+      wrap.style.opacity = on ? '1' : '0'; wrap.style.pointerEvents = on ? 'auto' : 'none';
     }
-    function recWake() {
-      wrap.style.opacity = '1'; wrap.style.pointerEvents = 'auto';
-      clearTimeout(recIdle); recIdle = setTimeout(recSleep, REC_IDLE_MS);
+    if (gb) {
+      new MutationObserver(function () { recSet(gb.classList.contains('show')); }).observe(gb, { attributes: true, attributeFilter: ['class'] });
+      recSet(gb.classList.contains('show'));
     }
-    ['mousemove', 'mousedown', 'touchstart', 'keydown', 'wheel'].forEach(function (ev) { document.addEventListener(ev, recWake, { passive: true, capture: true }); });
-    recWake();
     function placePanel() {
       var below = wrap.offsetTop < window.innerHeight / 2;
       panel.style.top = below ? '100%' : 'auto'; panel.style.bottom = below ? 'auto' : '100%';
