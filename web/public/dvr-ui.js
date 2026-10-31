@@ -23,7 +23,7 @@
     var panel = el('div', 'display:none;position:absolute;right:0;width:min(380px,94vw);max-height:70vh;overflow:auto;background:#15181d;color:#e8e8e8;border:1px solid #333;border-radius:10px;padding:10px;font:13px system-ui;cursor:default');
     wrap.appendChild(btn); wrap.appendChild(panel); document.body.appendChild(wrap);
     // position: remembered per device, default = right edge, mid-height (clear of the control bars)
-    var KEY = 'dvr_btn_pos_v2';
+    var KEY = 'dvr_btn_pos_v3';
     function clamp() {
       var w = wrap.offsetWidth || 80, h = wrap.offsetHeight || 34;
       var x = Math.min(Math.max(0, wrap.offsetLeft), Math.max(0, window.innerWidth - w));
@@ -33,7 +33,7 @@
     var pos = null;
     try { pos = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) {}
     if (pos && typeof pos.x === 'number') { wrap.style.left = pos.x + 'px'; wrap.style.top = pos.y + 'px'; }
-    else { wrap.style.left = Math.max(0, window.innerWidth - 100) + 'px'; wrap.style.top = '56px'; }
+    else { wrap.style.left = Math.max(0, window.innerWidth - (wrap.offsetWidth || 80) - 16) + 'px'; wrap.style.top = (window.innerWidth <= 640 ? 56 : 62) + 'px'; }
     clamp(); window.addEventListener('resize', clamp);
     function placePanel() {
       var below = wrap.offsetTop < window.innerHeight / 2;
