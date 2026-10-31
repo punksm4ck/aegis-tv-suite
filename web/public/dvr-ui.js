@@ -18,9 +18,49 @@
 
   function init() {
     api('/api/channels').then(function (l) { l.forEach(function (c) { channels[c.id] = c; }); }).catch(function () {});
-    var btn = el('button', 'position:fixed;right:12px;bottom:12px;z-index:9999;background:#c0151b;color:#fff;border:0;border-radius:20px;padding:8px 14px;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px #0008', '● REC');
-    var panel = el('div', 'display:none;position:fixed;right:12px;bottom:56px;z-index:9999;width:min(380px,94vw);max-height:70vh;overflow:auto;background:#15181d;color:#e8e8e8;border:1px solid #333;border-radius:10px;padding:10px;font:13px system-ui');
-    document.body.appendChild(panel); document.body.appendChild(btn);
+    var wrap = el('div', 'position:fixed;z-index:9999;touch-action:none;');
+    var btn = el('button', 'background:#c0151b;color:#fff;border:0;border-radius:20px;padding:8px 14px;font:600 13px system-ui;cursor:grab;box-shadow:0 2px 8px #0008;touch-action:none;user-select:none;-webkit-user-select:none', '\u25CF REC');
+    var panel = el('div', 'display:none;position:absolute;right:0;width:min(380px,94vw);max-height:70vh;overflow:auto;background:#15181d;color:#e8e8e8;border:1px solid #333;border-radius:10px;padding:10px;font:13px system-ui;cursor:default');
+    wrap.appendChild(btn); wrap.appendChild(panel); document.body.appendChild(wrap);
+    // position: remembered per device, default = right edge, mid-height (clear of the control bars)
+    var KEY = 'dvr_btn_pos';
+    function clamp() {
+      var w = wrap.offsetWidth || 80, h = wrap.offsetHeight || 34;
+      var x = Math.min(Math.max(0, wrap.offsetLeft), Math.max(0, window.innerWidth - w));
+      var y = Math.min(Math.max(0, wrap.offsetTop), Math.max(0, window.innerHeight - h));
+      wrap.style.left = x + 'px'; wrap.style.top = y + 'px';
+    }
+    var pos = null;
+    try { pos = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) {}
+    if (pos && typeof pos.x === 'number') { wrap.style.left = pos.x + 'px'; wrap.style.top = pos.y + 'px'; }
+    else { wrap.style.left = Math.max(0, window.innerWidth - 100) + 'px'; wrap.style.top = Math.round(window.innerHeight * 0.4) + 'px'; }
+    clamp(); window.addEventListener('resize', clamp);
+    function placePanel() {
+      var below = wrap.offsetTop < window.innerHeight / 2;
+      panel.style.top = below ? '100%' : 'auto'; panel.style.bottom = below ? 'auto' : '100%';
+      panel.style.marginTop = below ? '6px' : '0'; panel.style.marginBottom = below ? '0' : '6px';
+      var left = wrap.offsetLeft + wrap.offsetWidth - panel.offsetWidth;   // keep panel on screen
+      panel.style.right = left < 0 ? (left) + 'px' : '0';
+    }
+    var drag = null;
+    btn.addEventListener('pointerdown', function (e) {
+      drag = { sx: e.clientX, sy: e.clientY, ox: wrap.offsetLeft, oy: wrap.offsetTop, moved: false };
+      try { btn.setPointerCapture(e.pointerId); } catch (x) {}
+    });
+    btn.addEventListener('pointermove', function (e) {
+      if (!drag) return;
+      var dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+      if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 6) return;
+      drag.moved = true; btn.style.cursor = 'grabbing';
+      wrap.style.left = (drag.ox + dx) + 'px'; wrap.style.top = (drag.oy + dy) + 'px'; clamp();
+    });
+    btn.addEventListener('pointerup', function () {
+      if (!drag) return;
+      var moved = drag.moved; drag = null; btn.style.cursor = 'grab';
+      if (moved) { try { localStorage.setItem(KEY, JSON.stringify({ x: wrap.offsetLeft, y: wrap.offsetTop })); } catch (e) {} return; }
+      panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+      if (panel.style.display === 'block') { placePanel(); render(); }
+    });
     var list = el('div');
     function render() {
       api('/api/dvr/jobs').then(function (jobs) {
@@ -50,7 +90,6 @@
       api('/api/dvr/record', { channelId: cur.id, title: c ? c.name : 'Recording', minutes: Number(mins.value) }).then(render).catch(function (e) { alert(e.message); });
     };
     head.appendChild(rec); head.appendChild(mins); panel.appendChild(head); panel.appendChild(list);
-    btn.onclick = function () { panel.style.display = panel.style.display === 'none' ? 'block' : 'none'; if (panel.style.display === 'block') render(); };
     setInterval(function () { if (panel.style.display === 'block') render(); }, 10000);
     // for the guide: window.tvDvr.record({channelId, title, start, end}) with unix seconds (or ms)
     window.tvDvr = { record: function (o) { return api('/api/dvr/record', o).then(function (r) { if (panel.style.display === 'block') render(); return r; }); } };
