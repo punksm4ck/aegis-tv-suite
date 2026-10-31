@@ -89,6 +89,14 @@ function mount(app, { requireAuth, jsonOnly, getPlaylist, dataDir, publicDir }) 
     save();
   }
 
+  function watch(j, now) {   // restart ffmpeg if its part file stops growing (silent reconnect loops never exit)
+    const a = active.get(j.id);
+    if (!a || a.stopping || !a.child) return;
+    let size = -1; try { size = fs.statSync(j.path).size; } catch (_) {}
+    if (a.wsize === undefined || size !== a.wsize || a.wpath !== j.path) { a.wsize = size; a.wpath = j.path; a.wat = now; return; }
+    if (now - a.wat > 180) { console.log('[dvr] no data for 180s, restarting ffmpeg:', j.title); a.wat = now; try { a.child.kill(); } catch (_) {} }
+  }
+
   function finish(jid) {
     const a = active.get(jid);
     const j = jobs.find((x) => x.id === jid);
@@ -113,6 +121,7 @@ function mount(app, { requireAuth, jsonOnly, getPlaylist, dataDir, publicDir }) 
         if (now >= j.end + POST) { j.status = 'missed'; dirty = true; }
         else if (now >= j.start - PRE) start(j);
       } else if (j.status === 'recording' && now >= j.end + POST) finish(j.id);
+      else if (j.status === 'recording') watch(j, now);
     }
     if (dirty) save();
   }, 5000).unref();
