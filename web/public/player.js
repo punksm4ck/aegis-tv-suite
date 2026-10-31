@@ -514,6 +514,7 @@
     '#ts .txt{white-space:nowrap;color:#a9acb8;letter-spacing:.04em}' +
     '#ts.paused .txt{color:#ffd166}#ts.behind .txt{color:#6d8cff}' +
     '#ts .live{font-weight:700;letter-spacing:.08em;color:#ff5d5d}#ts .live[hidden]{display:none}' +
+    '#ts .skip{font-weight:700;letter-spacing:.04em;color:#a9d1ff}#ts .skip[hidden]{display:none}' +
     '@media(max-width:700px){#ts{right:auto;left:16px;bottom:64px;max-width:calc(100vw - 32px)}#ts .txt{white-space:normal}}';
   document.head.appendChild(css);
 
@@ -527,7 +528,10 @@
   var liveBtn = document.createElement('button');
   liveBtn.type = 'button'; liveBtn.className = 'live'; liveBtn.textContent = 'GO LIVE';
   liveBtn.setAttribute('aria-label', 'Go live');
-  box.appendChild(ppBtn); box.appendChild(txt); box.appendChild(liveBtn);
+  var skipBtn = document.createElement('button');
+  skipBtn.type = 'button'; skipBtn.className = 'skip'; skipBtn.textContent = '+30s';
+  skipBtn.setAttribute('aria-label', 'Skip ahead 30 seconds');
+  box.appendChild(ppBtn); box.appendChild(txt); box.appendChild(skipBtn); box.appendChild(liveBtn);
   document.body.appendChild(box);
 
   var ICON_PAUSE = '<svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
@@ -558,6 +562,7 @@
     ppBtn.innerHTML = userPaused ? ICON_PLAY : ICON_PAUSE;
     ppBtn.setAttribute('aria-label', userPaused ? 'Resume' : 'Pause');
     liveBtn.hidden = !userPaused && behind <= 4;
+    skipBtn.hidden = !userPaused && behind <= 4;
     box.classList.toggle('paused', userPaused);
     box.classList.toggle('behind', !userPaused && behind > 4);
     box.classList.toggle('show', userPaused || behind > 4 || Date.now() < activeUntil);
@@ -604,7 +609,25 @@
     reveal();
   }
 
+  // Skip ahead by sec seconds. Never past live: within reach of live it just goes live.
+  function skipAhead(sec) {
+    if (video.readyState < 2) return;
+    var ct = video.currentTime, lt = liveTarget();
+    if (isFinite(lt) && lt - ct <= sec + 1) {
+      if (!userPaused && lt - ct <= 4) { note('Already live.'); reveal(); return; }
+      goLive();
+      return;
+    }
+    var hi = bufRange()[1] - 1;
+    if (hi <= ct + 0.5) { note('Nothing buffered ahead yet.'); reveal(); return; }
+    var t = Math.min(ct + sec, hi);
+    try { video.currentTime = t; } catch (e) {}
+    if (t < ct + sec - 0.5) note('Skipped ' + Math.round(t - ct) + 's (all that is buffered).');
+    reveal();
+  }
+
   ppBtn.addEventListener('click', toggle);
+  skipBtn.addEventListener('click', function () { skipAhead(30); });
   liveBtn.addEventListener('click', goLive);
 
   // New channel / teardown: forget any pause.
@@ -618,12 +641,14 @@
       if (tag === 'BUTTON') return;
       toggle(); e.preventDefault();
     } else if (e.key === 'ArrowLeft') { skip(-SKIP); e.preventDefault(); }
-    else if (e.key === 'ArrowRight') { skip(SKIP); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { if (e.shiftKey) skipAhead(30); else skip(SKIP); e.preventDefault(); }
+    else if (e.key === 's' || e.key === 'S') { skipAhead(30); e.preventDefault(); }
     else if (e.key === 'l' || e.key === 'L' || e.key === 'End') { goLive(); e.preventDefault(); }
   });
   ['mousemove', 'touchstart'].forEach(function (t) { document.addEventListener(t, reveal, { passive: true }); });
 
   tick = setInterval(render, 500);
   render();
-  window.tvTimeshift = { pause: pause, resume: resume, goLive: goLive, skip: skip, toggle: toggle };
+  window.tvTimeshift = { pause: pause, resume: resume, goLive: goLive, skip: skip, skipAhead: skipAhead, toggle: toggle };
+  window.tvSkip = function (sec) { skipAhead(sec || 30); };
 })();
