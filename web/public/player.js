@@ -459,6 +459,7 @@
   if (!video) return;
 
   var SKIP = 10;            // seconds for left/right
+  var LIVE_TOL = 8;         // playing within this many seconds of live counts as LIVE (live sync jitters by about a segment)
   var SLACK = 10;           // buffer may trail the live edge by this much and still resume seamlessly
   var userPaused = false, pausedAt = 0, lastEnd = 0, lastGrowth = 0;
   var activeUntil = 0, tick = null;
@@ -563,6 +564,7 @@
     var ct = video.currentTime || 0;
     var lt = liveTarget();
     var behind = isFinite(lt) ? Math.max(0, lt - ct) : 0;
+    if (behind <= LIVE_TOL && !userPaused) behind = 0;
     var r = bufRange();
     var ahead = Math.max(0, r[1] - ct);
     var label;
@@ -681,7 +683,7 @@
     var b = video.buffered, n = b.length;
     if (!n) return null;
     var s = b.start(0), e = b.end(n - 1), lt = liveTarget();
-    if (isFinite(lt) && lt > e) e = lt;
+    if (isFinite(lt)) e = lt;   // right edge = what the player calls live, not the end of the buffer
     return e - s > 2 ? [s, e] : null;
   }
   function clampBuffered(t) {
@@ -712,6 +714,7 @@
     }
     bufsEl.innerHTML = html;
     var t = dragging ? dragT : video.currentTime;
+    if (!dragging && !userPaused && e - t <= LIVE_TOL) t = e;   // playing at live: pin to the right end
     var f = Math.max(0, Math.min(1, (t - s) / span)) * 100;
     playedEl.style.width = f + '%';
     thumbEl.style.left = f + '%';
