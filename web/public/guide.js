@@ -102,3 +102,48 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
   document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', install) : install();
   window.openGuide = openGuide;
 })();
+
+// ---- top-left Guide button ----
+(function () {
+  var st = document.createElement('style');
+  st.textContent =
+    '#tvGuideBtn{position:fixed;top:calc(12px + env(safe-area-inset-top,0px));left:calc(12px + env(safe-area-inset-left,0px));' +
+    'z-index:40;min-width:40px;height:40px;padding:0 14px;display:flex;align-items:center;gap:8px;box-sizing:border-box;' +
+    'border:0;border-radius:8px;background:rgba(20,22,30,.78);color:#e8e8ea;cursor:pointer;' +
+    'font:600 13px ui-monospace,Menlo,Consolas,monospace;letter-spacing:.06em;' +
+    'opacity:0;pointer-events:none;transition:opacity .25s}' +
+    '#tvGuideBtn.show{opacity:1;pointer-events:auto}' +
+    '#tvGuideBtn:hover{background:rgba(40,44,60,.9)}' +
+    '#tvGuideBtn *{pointer-events:none}';
+  document.head.appendChild(st);
+
+  var btn = document.createElement('button');
+  btn.id = 'tvGuideBtn';
+  btn.type = 'button';
+  btn.setAttribute('aria-label', 'Open guide');
+  btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="4" width="18" height="3" rx="1"/><rect x="3" y="10.5" width="18" height="3" rx="1"/><rect x="3" y="17" width="18" height="3" rx="1"/></svg><span>GUIDE</span>';
+  btn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    btn.classList.remove('show');
+    if (window.openGuide) window.openGuide();
+  });
+  document.body.appendChild(btn);
+
+  // Guide counts as open when any of its own elements (class g-*, other than the launcher) is visible.
+  function guideOpen() {
+    var els = document.querySelectorAll('[class^="g-"]:not(.g-open)');
+    for (var i = 0; i < els.length; i++) { if (els[i].offsetWidth > 0 && els[i].offsetHeight > 0) return true; }
+    return false;
+  }
+  var hideT = null;
+  function wake() {
+    if (guideOpen()) { btn.classList.remove('show'); return; }
+    btn.classList.add('show');
+    clearTimeout(hideT);
+    hideT = setTimeout(function () { btn.classList.remove('show'); }, 4000);
+  }
+  ['mousemove', 'touchstart', 'pointerdown', 'keydown'].forEach(function (ev) {
+    document.addEventListener(ev, wake, { passive: true });
+  });
+  wake();
+})();
