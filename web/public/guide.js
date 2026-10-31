@@ -92,7 +92,7 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
   function install() {
     const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = '/guide.css'; document.head.append(l);
     const panel = document.getElementById('panel');
-    if (panel) { const b = mk('button', 'g-open', 'Guide (G)'); b.onclick = e => { e.stopPropagation(); openGuide(); }; panel.prepend(b); }
+    if (panel) { const b = mk('button', 'g-open', 'Guide (G)'); b.onclick = e => { e.stopPropagation(); (window.openOps || openGuide)(); }; panel.prepend(b); }
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') return close();
       if (e.target.matches && e.target.matches('input,textarea,select')) return;
@@ -146,4 +146,309 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
     document.addEventListener(ev, wake, { passive: true });
   });
   wake();
+})();
+
+
+// ---- AEGIS // TV-OPS style guide (opened from the picker's Guide button) ----
+(() => {
+  'use strict';
+  const PX = 3.6, HOURS = 72, LAB = 200;
+  const ORD = typeof TV_GUIDE_ORDER !== 'undefined' ? TV_GUIDE_ORDER : [];
+  const mk = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
+  const fmt = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const fmtDay = ts => new Date(ts * 1000).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  const gkey = c => String(c.group || 'Other').split(';')[0];
+  const getJSON = async u => {
+    const r = await fetch(u, { credentials: 'same-origin', cache: 'no-store' });
+    if (r.status === 401) { location.href = '/login'; throw new Error('auth'); }
+    if (!r.ok) throw new Error(u + ' ' + r.status);
+    return r.json();
+  };
+  const centerIn = (sc, el) => {
+    if (!sc || !el) return;
+    const a = sc.getBoundingClientRect(), b = el.getBoundingClientRect();
+    sc.scrollTop += (b.top - a.top) - (a.height - b.height) / 2;
+  };
+
+  const css = document.createElement('style');
+  css.textContent = [
+    '#ops-ov{position:fixed;inset:0;z-index:1000;display:flex;background:#0b0c10;color:#e8e8ea;font:13px/1.35 ui-monospace,Menlo,Consolas,monospace;',
+    'padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px);box-sizing:border-box}',
+    '#ops-ov *{box-sizing:border-box}',
+    '#ops-ov button,#ops-ov select{background:#16171b;color:#e8e8ea;border:1px solid #2b2d34;border-radius:8px;font:inherit;padding:0 14px;height:40px;cursor:pointer}',
+    '#ops-ov button:hover{background:#20222b}',
+    '#ops-left{width:clamp(260px,30vw,460px);flex:none;display:flex;flex-direction:column;border-right:1px solid #23252d;min-width:0}',
+    '#ops-tools{display:flex;gap:8px;padding:10px;align-items:center;flex:none}',
+    '#ops-q{flex:1;min-width:0;height:40px;padding:0 12px;border-radius:8px;border:1px solid #34363f;background:#0e0f12;color:#fff;font:inherit;outline:none}',
+    '#ops-q:focus{border-color:#6d8cff}',
+    '#ops-lh,.ops-lr{display:grid;grid-template-columns:minmax(0,1.5fr) 82px minmax(0,1fr);gap:8px;padding:0 12px}',
+    '#ops-lh{color:#6d8cff;padding-top:8px;padding-bottom:8px;border-bottom:1px solid #23252d;flex:none}',
+    '#ops-list{flex:1;min-height:0;overflow:auto}',
+    '.ops-lr{height:30px;align-items:center;cursor:pointer}',
+    '.ops-lr:hover{background:#1a1c24}',
+    '.ops-lr.cur{background:#262a3a}',
+    '.ops-lr span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.ops-lr .g{color:#9a9dab}',
+    '.ops-empty{padding:18px;color:#8a8d98}',
+    '#ops-right{flex:1;min-width:0;display:flex;flex-direction:column}',
+    '#ops-air{display:flex;align-items:center;gap:12px;padding:0 12px;height:52px;flex:none;color:#6d8cff}',
+    '#ops-airt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '#ops-stage{flex:1;min-height:80px;background:#000;margin:0 12px}',
+    '#ops-ctl{display:flex;align-items:center;gap:8px;padding:10px 12px;flex:none;flex-wrap:wrap}',
+    '#ops-vol{width:140px;accent-color:#6d8cff}',
+    '#ops-guide{height:40%;min-height:150px;flex:none;border-top:1px solid #23252d;display:flex;flex-direction:column}',
+    '#ops-gh{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;color:#6d8cff;flex:none}',
+    '#ops-gs{flex:1;min-height:0;overflow:auto;position:relative}',
+    '#ops-gi{position:relative}',
+    '.ops-row{display:flex;height:44px}',
+    '.ops-hrow{position:sticky;top:0;z-index:4;background:#0b0c10;height:32px}',
+    '.ops-lab{position:sticky;left:0;z-index:3;width:' + LAB + 'px;flex:none;background:#0b0c10;border-right:1px solid #23252d;display:flex;align-items:center;gap:12px;padding:0 10px;cursor:pointer;overflow:hidden;white-space:nowrap}',
+    '.ops-hrow .ops-lab{z-index:5;cursor:default}',
+    '.ops-lab i{color:#ff5b5b;font-style:normal;font-weight:700;width:22px;flex:none}',
+    '.ops-lab span{overflow:hidden;text-overflow:ellipsis}',
+    '.ops-trk{position:relative;flex:none;width:' + (HOURS * 60 * PX) + 'px;height:100%}',
+    '.ops-tick{position:absolute;top:0;padding:8px 6px;color:#9a9dab;border-left:1px solid #23252d;white-space:nowrap}',
+    '.ops-grp{position:sticky;left:0;width:' + LAB + 'px;height:30px;line-height:30px;padding-left:12px;color:#ff5b5b;font-weight:700}',
+    '.ops-p{position:absolute;top:3px;bottom:3px;line-height:36px;padding:0 8px;border-radius:6px;background:#161821;border:1px solid #23252d;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}',
+    '.ops-p.now{background:#262a3a}',
+    '.ops-p.none{color:#6b6e7a}',
+    '.ops-p:hover{background:#2c3043}',
+    '.ops-row.cur .ops-lab{background:#262a3a}',
+    '#ops-now{position:absolute;top:0;bottom:0;width:2px;background:#ff3b4a;z-index:2;pointer-events:none}',
+    '@media (max-width:800px){#ops-left{display:none}}'
+  ].join('');
+  document.head.appendChild(css);
+
+  let ov = null, cleanup = [];
+
+  function closeOps() {
+    if (!ov) return;
+    cleanup.forEach(f => { try { f(); } catch (e) {} });
+    cleanup = [];
+    ov.remove(); ov = null;
+  }
+
+  async function openOps() {
+    if (ov) return;
+    const video = document.getElementById('v');
+    if (!video) { if (window.openGuide) window.openGuide(); return; }
+    const pk = document.getElementById('picker'); if (pk) pk.classList.remove('open');
+    const TS = window.tvTimeshift || {};
+    let chans = [], guide = { channels: {} }, order = [], groups = {}, now = 0, t0 = 0, t1 = 0, dt = null;
+
+    ov = mk('div'); ov.id = 'ops-ov';
+    ov.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); });
+
+    const left = mk('div'); left.id = 'ops-left';
+    const tools = mk('div'); tools.id = 'ops-tools';
+    const q = mk('input'); q.id = 'ops-q'; q.type = 'search'; q.placeholder = 'search channels (Ctrl+F)'; q.autocomplete = 'off'; q.spellcheck = false;
+    const sel = mk('select');
+    const refresh = mk('button', '', 'REFRESH');
+    tools.append(q, sel, refresh);
+    const lh = mk('div'); lh.id = 'ops-lh'; lh.append(mk('span', '', 'STATION'), mk('span', '', 'GROUP'), mk('span', '', 'NOW'));
+    const list = mk('div'); list.id = 'ops-list';
+    left.append(tools, lh, list);
+
+    const right = mk('div'); right.id = 'ops-right';
+    const air = mk('div'); air.id = 'ops-air';
+    const airt = mk('span'); airt.id = 'ops-airt';
+    const xb = mk('button', '', 'CLOSE (Esc)'); xb.onclick = closeOps;
+    air.append(airt, xb);
+    const stage = mk('div'); stage.id = 'ops-stage';
+    const ctl = mk('div'); ctl.id = 'ops-ctl';
+    const bPause = mk('button', '', 'PAUSE'), bLive = mk('button', '', 'GO LIVE'), bMute = mk('button', '', 'MUTE (F4)'), bFull = mk('button', '', 'FULLSCREEN');
+    const vol = mk('input'); vol.id = 'ops-vol'; vol.type = 'range'; vol.min = 0; vol.max = 1; vol.step = 0.01;
+    ctl.append(bPause, bLive, bMute, vol, bFull);
+    const gwrap = mk('div'); gwrap.id = 'ops-guide';
+    const gh = mk('div'); gh.id = 'ops-gh';
+    const bNow = mk('button', '', 'NOW (F3)');
+    gh.append(mk('span', '', 'PROGRAM GUIDE // 72H'), bNow);
+    const gs = mk('div'); gs.id = 'ops-gs';
+    const gi = mk('div'); gi.id = 'ops-gi'; gs.append(gi);
+    gwrap.append(gh, gs);
+    right.append(air, stage, ctl, gwrap);
+    ov.append(left, right); document.body.append(ov);
+
+    // Move the live video into the center pane (same element, so the stream keeps playing).
+    const prevStyle = video.getAttribute('style');
+    const place = () => {
+      const r = stage.getBoundingClientRect(), s = video.style;
+      s.position = 'fixed'; s.right = 'auto'; s.bottom = 'auto';
+      s.left = r.left + 'px'; s.top = r.top + 'px'; s.width = r.width + 'px'; s.height = r.height + 'px'; s.zIndex = '1001';
+    };
+    place();
+    const ro = new ResizeObserver(place); ro.observe(stage);
+    window.addEventListener('resize', place);
+    cleanup.push(() => {
+      ro.disconnect(); window.removeEventListener('resize', place);
+      if (prevStyle == null) video.removeAttribute('style'); else video.setAttribute('style', prevStyle);
+    });
+    if (pk) {
+      const mo = new MutationObserver(() => { if (pk.classList.contains('open')) pk.classList.remove('open'); });
+      mo.observe(pk, { attributes: true, attributeFilter: ['class'] });
+      cleanup.push(() => mo.disconnect());
+    }
+
+    const progsOf = c => (guide.channels && guide.channels[c.id]) || [];
+    const curProg = c => progsOf(c).find(p => p.s <= now && p.e > now);
+    const match = c => {
+      const term = q.value.trim().toLowerCase();
+      if (!term) return true;
+      return String(c.name).toLowerCase().includes(term) || progsOf(c).some(p => String(p.t).toLowerCase().includes(term));
+    };
+
+    function refreshCur() {
+      if (!ov) return;
+      const id = window.tvCurrent ? window.tvCurrent() : null;
+      ov.querySelectorAll('.cur').forEach(e => e.classList.remove('cur'));
+      if (id != null) ov.querySelectorAll('[data-id]').forEach(e => { if (e.dataset.id === String(id)) e.classList.add('cur'); });
+      const c = chans.find(x => String(x.id) === String(id));
+      const p = c && curProg(c);
+      airt.textContent = c ? 'ON AIR: ' + c.name + (p ? '  -  ' + p.t : '') : 'ON AIR: -';
+    }
+    const tune = c => {
+      if (window.tvTune) window.tvTune(c.id);
+      setTimeout(refreshCur, 150); setTimeout(refreshCur, 1200);
+    };
+
+    function computeGroups() {
+      const keep = sel.value;
+      order = []; groups = {};
+      chans.forEach(c => { const g = gkey(c); if (!groups[g]) { groups[g] = []; order.push(g); } groups[g].push(c); });
+      order.sort((x, y) => { const i = ORD.indexOf(x), j = ORD.indexOf(y); return (i < 0 ? 999 : i) - (j < 0 ? 999 : j); });
+      sel.textContent = ''; sel.append(new Option('ALL', ''));
+      order.forEach(g => sel.append(new Option(g, g)));
+      if (keep && groups[keep]) sel.value = keep;
+    }
+
+    function renderList() {
+      list.textContent = '';
+      const gsel = sel.value; let n = 0;
+      const frag = document.createDocumentFragment();
+      order.forEach(g => {
+        if (gsel && g !== gsel) return;
+        groups[g].slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).forEach(c => {
+          if (!match(c)) return;
+          const p = curProg(c);
+          const r = mk('div', 'ops-lr'); r.dataset.id = c.id;
+          r.append(mk('span', 'n', c.name), mk('span', 'g', g), mk('span', 'w', p ? p.t : ''));
+          r.title = c.name + (p ? '\n' + p.t : '');
+          r.onclick = () => tune(c);
+          frag.append(r); n++;
+        });
+      });
+      list.append(frag);
+      if (!n) list.append(mk('div', 'ops-empty', chans.length ? 'No matching channels' : 'No channels'));
+    }
+
+    function renderGrid() {
+      gi.textContent = '';
+      gi.style.width = (LAB + HOURS * 60 * PX) + 'px';
+      const head = mk('div', 'ops-row ops-hrow'), hs = mk('div', 'ops-trk');
+      head.append(mk('div', 'ops-lab', ''));
+      for (let t = t0, i = 0; t < t1; t += 1800, i++) {
+        const d = new Date(t * 1000);
+        const k = mk('div', 'ops-tick', d.getHours() === 0 && d.getMinutes() === 0 ? fmtDay(t) : fmt(t));
+        k.style.left = (i * 30 * PX) + 'px'; hs.append(k);
+      }
+      head.append(hs); gi.append(head);
+      const gsel = sel.value; let shown = 0;
+      order.forEach(g => {
+        if (gsel && g !== gsel) return;
+        const rows = groups[g].filter(c => progsOf(c).some(p => p.e > t0 && p.s < t1) && match(c));
+        if (!rows.length) return;
+        gi.append(mk('div', 'ops-grp', g.toUpperCase()));
+        rows.forEach((c, idx) => {
+          const row = mk('div', 'ops-row'), lab = mk('div', 'ops-lab'), trk = mk('div', 'ops-trk');
+          row.dataset.id = c.id;
+          lab.append(mk('i', '', String(idx + 1)), mk('span', '', c.name));
+          lab.onclick = () => tune(c);
+          progsOf(c).filter(p => p.e > t0 && p.s < t1).forEach(p => {
+            const s = Math.max(p.s, t0), e = Math.min(p.e, t1);
+            const b = mk('div', 'ops-p' + (p.s <= now && p.e > now ? ' now' : ''), p.t);
+            b.style.left = ((s - t0) / 60 * PX) + 'px'; b.style.width = Math.max((e - s) / 60 * PX - 2, 2) + 'px';
+            b.title = p.t + '\n' + fmt(p.s) + ' - ' + fmt(p.e) + (p.c ? '  |  ' + p.c : '') + (p.d ? '\n\n' + p.d : '');
+            b.onclick = () => tune(c); trk.append(b);
+          });
+          row.append(lab, trk); gi.append(row); shown++;
+        });
+      });
+      if (!shown) gi.append(mk('div', 'ops-empty', 'No guide data' + (q.value.trim() ? ' for this search' : '')));
+      const nl = mk('div'); nl.id = 'ops-now'; nl.style.left = (LAB + (now - t0) / 60 * PX) + 'px'; gi.append(nl);
+    }
+
+    const scrollNow = () => {
+      const n = Date.now() / 1000;
+      gs.scrollLeft = Math.max(0, (n - t0) / 60 * PX - 60);
+    };
+
+    async function load() {
+      try {
+        const r = await Promise.all([getJSON('/api/channels'), getJSON('/api/guide').catch(() => ({ channels: {} }))]);
+        chans = Array.isArray(r[0]) ? r[0] : [];
+        guide = r[1] && r[1].channels ? r[1] : { channels: {} };
+      } catch (e) {
+        list.textContent = ''; list.append(mk('div', 'ops-empty', 'Could not load channels'));
+        return;
+      }
+      now = Math.floor(Date.now() / 1000); t0 = Math.floor(now / 1800) * 1800; t1 = t0 + HOURS * 3600;
+      computeGroups(); renderList(); renderGrid(); refreshCur();
+    }
+
+    const rerender = () => { clearTimeout(dt); dt = setTimeout(() => { renderList(); renderGrid(); refreshCur(); }, 120); };
+    q.oninput = rerender; sel.onchange = rerender;
+    refresh.onclick = () => { refresh.textContent = '...'; load().then(() => { refresh.textContent = 'REFRESH'; }); };
+    bNow.onclick = scrollNow;
+
+    const sync = () => {
+      bPause.textContent = video.paused ? 'RESUME' : 'PAUSE';
+      bMute.textContent = video.muted ? 'UNMUTE (F4)' : 'MUTE (F4)';
+      vol.value = video.volume;
+    };
+    bPause.onclick = () => {
+      if (video.paused) { if (TS.resume) TS.resume(); else video.play(); }
+      else { if (TS.pause) TS.pause(); else video.pause(); }
+      setTimeout(sync, 150);
+    };
+    bLive.onclick = () => { if (TS.goLive) TS.goLive(); };
+    bMute.onclick = () => { video.muted = !video.muted; sync(); };
+    vol.oninput = () => { video.volume = +vol.value; if (video.muted && +vol.value > 0) video.muted = false; };
+    bFull.onclick = () => {
+      const f = document.documentElement.requestFullscreen;
+      if (f) { try { f.call(document.documentElement).catch(() => {}); } catch (e) {} }
+      closeOps();
+    };
+    ['play', 'pause', 'volumechange'].forEach(ev => { video.addEventListener(ev, sync); cleanup.push(() => video.removeEventListener(ev, sync)); });
+    ['loadstart', 'emptied', 'playing'].forEach(ev => {
+      const f = () => setTimeout(refreshCur, 100);
+      video.addEventListener(ev, f); cleanup.push(() => video.removeEventListener(ev, f));
+    });
+    const iv = setInterval(() => {
+      const n = Date.now() / 1000, nl = document.getElementById('ops-now');
+      if (nl) nl.style.left = (LAB + (n - t0) / 60 * PX) + 'px';
+      now = Math.floor(n); refreshCur();
+    }, 30000);
+    cleanup.push(() => clearInterval(iv));
+    cleanup.push(() => clearTimeout(dt));
+
+    sync();
+    await load();
+    if (!ov) return;
+    centerIn(list, list.querySelector('.cur'));
+    centerIn(gs, gi.querySelector('.ops-row.cur'));
+    scrollNow();
+    q.focus();
+  }
+
+  document.addEventListener('keydown', e => {
+    if (!ov) return;
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeOps(); return; }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); const q = document.getElementById('ops-q'); if (q) { q.focus(); q.select(); } return; }
+    if (e.key === 'F3') { e.preventDefault(); const b = document.querySelector('#ops-gh button'); if (b) b.click(); return; }
+    if (e.key === 'F4') { e.preventDefault(); const v = document.getElementById('v'); if (v) v.muted = !v.muted; return; }
+    const inField = e.target && e.target.matches && e.target.matches('input,textarea,select');
+    if (!inField && (e.key === 'g' || e.key === 'G')) e.stopPropagation();
+  }, true);
+
+  window.openOps = openOps;
 })();
