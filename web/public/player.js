@@ -210,7 +210,7 @@
   window.tvCurrent = function () { return currentId; };
   window.tvHls = function () { return hls; };
   // ---- boot ----
-  fetch('/api/channels', { credentials: 'same-origin' })
+  fetch('/api/channels?all=1', { credentials: 'same-origin' })
     .then(function (r) {
       if (r.status === 401) { location.href = '/login'; throw new Error('auth'); }
       return r.json();

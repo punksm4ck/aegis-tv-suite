@@ -20,7 +20,8 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
     const pk = document.getElementById('picker'); if (pk) pk.classList.remove('open');
     let chans, guide;
     try {
-      [chans, guide] = await Promise.all([getJSON('/api/channels'), getJSON('/api/guide').catch(() => ({ channels: {} }))]);
+      var ALLM = !!window.tvAllMode;
+      [chans, guide] = await Promise.all([getJSON(ALLM ? '/api/channels?all=1' : '/api/channels'), ALLM ? Promise.resolve({ channels: {}, generated: 0 }) : getJSON('/api/guide').catch(() => ({ channels: {} }))]);
     } catch (e) { return; }
     const order = [], groups = {};
     chans.forEach(c => {
@@ -39,7 +40,9 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
     order.sort(function (x, y) { var i = TV_GUIDE_ORDER.indexOf(x), j = TV_GUIDE_ORDER.indexOf(y); return (i < 0 ? 999 : i) - (j < 0 ? 999 : j); });
     order.forEach(g => sel.append(new Option(g, g)));
     const x = mk('button', '', 'Close'); x.onclick = close;
-    bar.append(mk('b', '', 'Guide'), mk('span', 'g-stamp', guide.generated ? 'Updated ' + fmt(guide.generated) : 'No guide data yet'), q, sel, x);
+    const tg = mk('button', '', ALLM ? 'All channels' : 'Favorites');
+    tg.onclick = () => { window.tvAllMode = !window.tvAllMode; close(); openGuide(); };
+    bar.append(mk('b', '', 'Guide'), mk('span', 'g-stamp', ALLM ? 'All channels (' + chans.length + ')' : (guide.generated ? 'Updated ' + fmt(guide.generated) : 'No guide data yet')), q, sel, tg, x);
     const body = mk('div'); body.id = 'g-body';
     overlay.append(bar, body); document.body.append(overlay);
 
@@ -57,6 +60,7 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
       }
       head.append(hs); grid.append(head);
       const term = q.value.trim().toLowerCase(), gsel = sel.value;
+      if (ALLM && !gsel) { grid.append(mk('div', 'g-grp', 'Pick a group above')); return; }
       let shown = 0;
       for (const g of order) {
         if (gsel && g !== gsel) continue;
@@ -85,7 +89,19 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
       const nl = mk('div'); nl.id = 'g-now'; nl.style.left = 190 + (now - t0) / 60 * PX + 'px'; grid.append(nl);
       if (!shown) body.append(mk('div', 'g-grp', 'No matches'));
     }
-    q.oninput = render; sel.onchange = render; render();
+    const loaded = {};
+    const need = () => {
+      const gs = sel.value; if (!ALLM || !gs || loaded[gs]) return;
+      loaded[gs] = 1;
+      const raws = [...new Set((groups[gs] || []).map(c => c.group))];
+      Promise.all(raws.map(r => getJSON('/api/guide?all=1&group=' + encodeURIComponent(r)).catch(() => ({ channels: {} })))).then(rs => {
+        rs.forEach(r => Object.assign(guide.channels, r.channels || {}));
+        if (overlay) render();
+      });
+    };
+    q.oninput = render; sel.onchange = () => { need(); render(); };
+    if (ALLM && order.length) sel.value = order[0];
+    need(); render();
     const cr = body.querySelector('.cur'); if (cr) cr.scrollIntoView({ block: 'center' });
   }
 
@@ -235,6 +251,16 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
     const pk = document.getElementById('picker'); if (pk) pk.classList.remove('open');
     const TS = window.tvTimeshift || {};
     let chans = [], guide = { channels: {} }, order = [], groups = {}, now = 0, t0 = 0, t1 = 0, dt = null;
+    let loadedG = {};
+    function loadGroup(gs) {
+      if (!gs || loadedG[gs]) return; loadedG[gs] = 1;
+      const raws = [...new Set((groups[gs] || []).map(c => c.group))];
+      Promise.all(raws.map(r => getJSON('/api/guide?all=1&group=' + encodeURIComponent(r)).catch(() => ({ channels: {} })))).then(rs => {
+        if (!ov) return;
+        rs.forEach(r => Object.assign(guide.channels, r.channels || {}));
+        renderList(); renderGrid(); refreshCur();
+      });
+    }
 
     ov = mk('div'); ov.id = 'ops-ov';
     ov.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); });
@@ -244,7 +270,9 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
     const q = mk('input'); q.id = 'ops-q'; q.type = 'search'; q.placeholder = 'search channels (Ctrl+F)'; q.autocomplete = 'off'; q.spellcheck = false;
     const sel = mk('select');
     const refresh = mk('button', '', 'REFRESH');
-    tools.append(q, sel, refresh);
+    const tgl = mk('button', '', window.tvAllMode ? 'ALL CH' : 'FAVS'); tgl.title = 'Switch between favorites and all channels';
+    tgl.onclick = () => { window.tvAllMode = !window.tvAllMode; tgl.textContent = window.tvAllMode ? 'ALL CH' : 'FAVS'; sel.value = ''; refresh.onclick(); };
+    tools.append(q, sel, tgl, refresh);
     const lh = mk('div'); lh.id = 'ops-lh'; lh.append(mk('span', '', 'STATION'), mk('span', '', 'GROUP'), mk('span', '', 'NOW'));
     const list = mk('div'); list.id = 'ops-list';
     left.append(tools, lh, list);
@@ -318,7 +346,7 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
       order.sort((x, y) => { const i = ORD.indexOf(x), j = ORD.indexOf(y); return (i < 0 ? 999 : i) - (j < 0 ? 999 : j); });
       sel.textContent = ''; sel.append(new Option('ALL', ''));
       order.forEach(g => sel.append(new Option(g, g)));
-      if (keep && groups[keep]) sel.value = keep;
+      if (keep && groups[keep]) sel.value = keep; else if (window.tvAllMode && order.length) sel.value = order[0];
     }
 
     function renderList() {
@@ -353,6 +381,7 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
       }
       head.append(hs); gi.append(head);
       const gsel = sel.value; let shown = 0;
+      if (window.tvAllMode) { if (!gsel) { gi.append(mk('div', 'ops-empty', 'All channels: pick a group to load its guide')); return; } loadGroup(gsel); }
       order.forEach(g => {
         if (gsel && g !== gsel) return;
         const rows = groups[g].filter(c => progsOf(c).some(p => p.e > t0 && p.s < t1) && match(c));
@@ -384,9 +413,10 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
 
     async function load() {
       try {
-        const r = await Promise.all([getJSON('/api/channels'), getJSON('/api/guide').catch(() => ({ channels: {} }))]);
+        const r = await Promise.all([getJSON(window.tvAllMode ? '/api/channels?all=1' : '/api/channels'), window.tvAllMode ? Promise.resolve({ channels: {} }) : getJSON('/api/guide').catch(() => ({ channels: {} }))]);
         chans = Array.isArray(r[0]) ? r[0] : [];
         guide = r[1] && r[1].channels ? r[1] : { channels: {} };
+        loadedG = {};
       } catch (e) {
         list.textContent = ''; list.append(mk('div', 'ops-empty', 'Could not load channels'));
         return;
