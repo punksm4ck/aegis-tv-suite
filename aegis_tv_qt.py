@@ -737,7 +737,12 @@ class Player(QWidget):
                 self.go_live()
                 return
         elif st == vlc.State.Paused and self._ts_rec is not None:
-            tag = "PAUSED (buffering live)"
+            try:
+                _sz = os.path.getsize(self._ts_path) if os.path.exists(self._ts_path) else 0
+                _rs = str(self._ts_rec.get_state()).split(".")[-1]
+            except Exception:
+                _sz, _rs = 0, "?"
+            tag = "PAUSED (buffering live: %.1f MB, recorder %s)" % (_sz / 1e6, _rs)
         if self._ts_rec is not None and time.time() - self._ts_t0 > self.TS_MAX_SEC:
             self._ts_stop_rec()
         self.info.setText(f"{tag}: {self.label}")
@@ -757,7 +762,7 @@ class Player(QWidget):
         else:
             self.pause_now()
 
-    TS_MIN_SEC = 12      # shorter pauses just un-pause the live stream
+    TS_MIN_SEC = 3       # pauses shorter than this just un-pause the live stream
     TS_MAX_SEC = 3600    # stop writing the timeshift file after an hour
 
     def _ts_instance(self):
@@ -810,8 +815,22 @@ class Player(QWidget):
         self.mp.set_pause(1)
         self.btn_pause.setText("RESUME")
 
+    def _ts_log(self, waited):
+        try:
+            from urllib.parse import urlparse
+            sz = os.path.getsize(self._ts_path) if self._ts_path and os.path.exists(self._ts_path) else -1
+            rs = str(self._ts_rec.get_state()).split('.')[-1] if self._ts_rec is not None else 'none'
+            d = os.path.expanduser('~/.aegis_tv')
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, 'timeshift.log'), 'a', encoding='utf-8') as f:
+                f.write('%s resume host=%s waited=%.1fs file_bytes=%d recorder=%s ts_active=%s\n' % (
+                    time.strftime('%H:%M:%S'), urlparse(self.live_url).netloc, waited, sz, rs, self.ts_active))
+        except Exception:
+            pass
+
     def resume(self):
         waited = time.time() - self._paused_at
+        self._ts_log(waited)
         if (not self.ts_active) and self._ts_rec is not None:
             if (waited >= self.TS_MIN_SEC and os.path.exists(self._ts_path)
                     and os.path.getsize(self._ts_path) > 100000):
