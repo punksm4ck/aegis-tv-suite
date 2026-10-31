@@ -77,7 +77,7 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
             b.append(mk('small', '', fmt(p.s) + ' - ' + fmt(p.e)));
             b.style.left = (s - t0) / 60 * PX + 'px'; b.style.width = Math.max((e - s) / 60 * PX - 2, 2) + 'px';
             b.title = p.t + '\n' + fmt(p.s) + ' - ' + fmt(p.e) + (p.c ? '  |  ' + p.c : '') + (p.d ? '\n\n' + p.d : '');
-            b.onclick = () => tune(c); trk.append(b);
+            if (window.tvRecCtx) window.tvRecCtx(b, c, p); b.onclick = () => tune(c); trk.append(b);
           }
           row.append(lab, trk); grid.append(row); shown++;
         });
@@ -368,7 +368,7 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
             const b = mk('div', 'ops-p' + (p.s <= now && p.e > now ? ' now' : ''), p.t);
             b.style.left = ((s - t0) / 60 * PX) + 'px'; b.style.width = Math.max((e - s) / 60 * PX - 2, 2) + 'px';
             b.title = p.t + '\n' + fmt(p.s) + ' - ' + fmt(p.e) + (p.c ? '  |  ' + p.c : '') + (p.d ? '\n\n' + p.d : '');
-            b.onclick = () => tune(c); trk.append(b);
+            if (window.tvRecCtx) window.tvRecCtx(b, c, p); b.onclick = () => tune(c); trk.append(b);
           });
           row.append(lab, trk); gi.append(row); shown++;
         });
@@ -451,4 +451,81 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
   }, true);
 
   window.openOps = openOps;
+})();
+
+(function () {
+  'use strict';
+  var adminP = null, menu = null, toast = null, toastT = null;
+  function isAdmin() {
+    if (!adminP) adminP = fetch('/api/dvr/me', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : { admin: false }; }).then(function (j) { return !!j.admin; }).catch(function () { return false; });
+    return adminP;
+  }
+  function host() {
+    var fs = document.fullscreenElement;
+    return fs && fs.tagName !== 'VIDEO' ? fs : document.body;
+  }
+  function tm(ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+  function say(msg, bad) {
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.style.cssText = 'position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:2147483002;max-width:80vw;padding:10px 18px;border-radius:10px;color:#fff;font:500 14px/1.4 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;pointer-events:none;opacity:0;transition:opacity .25s;text-align:center;';
+    }
+    var h = host();
+    if (toast.parentNode !== h) h.appendChild(toast);
+    toast.textContent = msg;
+    toast.style.background = bad ? 'rgba(160,20,28,.96)' : 'rgba(20,24,34,.96)';
+    toast.style.opacity = '1';
+    clearTimeout(toastT);
+    toastT = setTimeout(function () { toast.style.opacity = '0'; }, 4000);
+  }
+  function closeMenu() {
+    if (menu && menu.parentNode) menu.parentNode.removeChild(menu);
+    menu = null;
+  }
+  function record(c, p) {
+    var now = Math.floor(Date.now() / 1000), body = { channelId: c.id, title: p.t };
+    if (p.s <= now) body.minutes = Math.max(1, Math.ceil((p.e - now) / 60));
+    else { body.start = p.s; body.end = p.e; }
+    fetch('/api/dvr/record', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.status); return j; }); })
+      .then(function () { say(p.s <= now ? 'Recording now: ' + p.t : 'Scheduled: ' + p.t + ' at ' + tm(p.s)); })
+      .catch(function (e) { say('Record failed: ' + e.message, true); });
+  }
+  function openMenu(x, y, c, p) {
+    closeMenu();
+    var ended = p.e <= Math.floor(Date.now() / 1000);
+    menu = document.createElement('div');
+    menu.style.cssText = 'position:fixed;z-index:2147483001;min-width:220px;max-width:320px;background:#16171b;color:#e8e8ea;border:1px solid #2b2d34;border-radius:10px;box-shadow:0 14px 40px rgba(0,0,0,.6);padding:6px;font:14px/1.35 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;';
+    var item = document.createElement('div');
+    item.style.cssText = 'padding:8px 10px;border-radius:7px;cursor:' + (ended ? 'default' : 'pointer') + ';opacity:' + (ended ? '.5' : '1') + ';';
+    var a = document.createElement('div');
+    a.style.cssText = 'font-weight:600;color:' + (ended ? '#8a8d98' : '#ff5a5f') + ';';
+    a.textContent = ended ? 'Already ended' : '\u25CF Record this program';
+    var b = document.createElement('div');
+    b.style.cssText = 'font-size:12px;color:#8a8d98;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    b.textContent = p.t + ' \u00B7 ' + c.name + ' \u00B7 ' + tm(p.s) + ' - ' + tm(p.e);
+    item.appendChild(a); item.appendChild(b);
+    if (!ended) {
+      item.onmouseenter = function () { item.style.background = '#262a3a'; };
+      item.onmouseleave = function () { item.style.background = 'transparent'; };
+      item.onclick = function (e) { e.stopPropagation(); closeMenu(); record(c, p); };
+    }
+    menu.appendChild(item);
+    host().appendChild(menu);
+    var w = menu.offsetWidth, h = menu.offsetHeight;
+    menu.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + 'px';
+    menu.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
+  }
+  document.addEventListener('mousedown', function (e) { if (menu && !menu.contains(e.target)) closeMenu(); }, true);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeMenu(); }, true);
+  document.addEventListener('scroll', closeMenu, true);
+  window.addEventListener('resize', closeMenu);
+  window.addEventListener('blur', closeMenu);
+  window.tvRecCtx = function (el, c, p) {
+    el.oncontextmenu = function (e) {
+      e.preventDefault(); e.stopPropagation();
+      var x = e.clientX, y = e.clientY;
+      isAdmin().then(function (ok) { if (ok) openMenu(x, y, c, p); });
+    };
+  };
 })();
