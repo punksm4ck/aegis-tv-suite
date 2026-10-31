@@ -22,6 +22,7 @@ const ROOT = __dirname;
 const DATA_DIR = path.join(ROOT, 'data');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const PLAYLIST_PATH = process.env.PLAYLIST_PATH || path.join(ROOT, 'playlist.m3u');
+const ALL_PLAYLIST_PATH = process.env.PLAYLIST_ALL_PATH || path.join(ROOT, 'playlist_all.m3u');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const SECRET_FILE = path.join(DATA_DIR, 'secret.key');
 const ALLOW_SIGNUP = process.env.ALLOW_SIGNUP === '1';
@@ -69,7 +70,8 @@ function parseM3U(text) {
       const name = comma >= 0 ? rest.slice(comma + 1).trim() : '';
       const g = rest.match(/group-title="([^"]*)"/);
       const tn = rest.match(/tvg-name="([^"]*)"/);
-      cur = { name: name || (tn && tn[1]) || 'Unknown', group: (g && g[1]) || 'Uncategorized' };
+      const ti = rest.match(/tvg-id="([^"]*)"/);
+      cur = { name: name || (tn && tn[1]) || 'Unknown', group: (g && g[1]) || 'Uncategorized', tvgId: ti ? ti[1] : '' };
     } else if (!line.startsWith('#')) {
       if (/^https?:\/\//i.test(line)) {
         const c = cur || { name: 'Unknown', group: 'Uncategorized' };
@@ -87,10 +89,18 @@ function parseM3U(text) {
 function getPlaylist() {
   let st;
   try { st = fs.statSync(PLAYLIST_PATH); } catch (_) { return playlistCache; }
-  if (st.mtimeMs !== playlistCache.mtime) {
-    const channels = parseM3U(fs.readFileSync(PLAYLIST_PATH, 'utf8'));
-    playlistCache = { mtime: st.mtimeMs, channels, byId: new Map(channels.map((c) => [c.id, c])) };
-    console.log(`[tv] playlist loaded: ${channels.length} channels`);
+  let st2 = null;
+  try { st2 = fs.statSync(ALL_PLAYLIST_PATH); } catch (_) {}
+  const stamp = st.mtimeMs + ':' + (st2 ? st2.mtimeMs : 0);
+  if (stamp !== playlistCache.mtime) {
+    const favs = parseM3U(fs.readFileSync(PLAYLIST_PATH, 'utf8'));
+    favs.forEach((c) => { c.fav = true; });
+    let extra = [];
+    if (st2) { try { extra = parseM3U(fs.readFileSync(ALL_PLAYLIST_PATH, 'utf8')); } catch (_) {} }
+    const have = new Set(favs.map((c) => c.id));
+    const channels = favs.concat(extra.filter((c) => !have.has(c.id)));
+    playlistCache = { mtime: stamp, channels, byId: new Map(channels.map((c) => [c.id, c])) };
+    console.log(`[tv] playlist loaded: ${channels.length} channels (${favs.length} favorites)`);
   }
   return playlistCache;
 }
@@ -309,10 +319,10 @@ app.get('/', requireAuth, (req, res) => {
 });
 app.get('/player.js', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'player.js')));
 
-app.get('/api/channels', requireAuth, (_req, res) => {
+app.get('/api/channels', requireAuth, (req, res) => {
   const { channels } = getPlaylist();
   res.set('Cache-Control', 'no-store');
-  res.json(channels.map(({ id, name, group }) => ({ id, name, group })));
+  res.json((req.query.all === '1' ? channels : channels.filter((c) => c.fav)).map(({ id, name, group, fav }) => ({ id, name, group, fav: !!fav })));
 });
 // Channel entry point: manifest of the channel, rewritten through the relay.
 app.get('/s/:id', requireAuth, async (req, res) => {
@@ -341,12 +351,27 @@ function getGuide() {
   } catch (_) {}
   return guideCache.data;
 }
+const GUIDE_ALL_PATH = path.join(ROOT, 'guide_all.json');
+let guideAllCache = { mtime: 0, data: null };
+function getGuideAll() {
+  try {
+    const st = fs.statSync(GUIDE_ALL_PATH);
+    if (st.mtimeMs !== guideAllCache.mtime) guideAllCache = { mtime: st.mtimeMs, data: JSON.parse(fs.readFileSync(GUIDE_ALL_PATH, 'utf8')) };
+  } catch (_) {}
+  return guideAllCache.data;
+}
 app.get('/guide.js', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'guide.js')));
 app.get('/guide.css', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'guide.css')));
-app.get('/api/guide', requireAuth, (_req, res) => {
+app.get('/api/guide', requireAuth, (req, res) => {
   const g = getGuide();
   const out = { generated: g ? g.generated : 0, hours: g ? g.hours : 0, channels: {} };
-  if (g) for (const c of getPlaylist().channels) { const e = g.channels[gnorm(c.name)]; if (e) out.channels[c.id] = e.programmes; }
+  const ga = req.query.all === '1' ? getGuideAll() : null;
+  const grp = typeof req.query.group === 'string' ? req.query.group : '';
+  for (const c of getPlaylist().channels) {
+    if (grp && c.group !== grp) continue;
+    const e = c.fav ? (g && g.channels[gnorm(c.name)]) : (ga && ga.channels[c.tvgId || 'n:' + gnorm(c.name)]);
+    if (e) out.channels[c.id] = e.programmes;
+  }
   res.setHeader('Cache-Control', 'no-store');
   res.json(out);
 });
