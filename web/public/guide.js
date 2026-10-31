@@ -36,7 +36,7 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
     overlay.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); });
     const bar = mk('div'); bar.id = 'g-bar';
     const q = mk('input'); q.placeholder = 'Filter channel or show...';
-    const sel = mk('select'); sel.append(new Option('All groups', ''));
+    const sel = mk('select'); sel.append(new Option('All groups', '')); sel.append(new Option('★ Starred', '__starred__'));
     order.sort(function (x, y) { var i = TV_GUIDE_ORDER.indexOf(x), j = TV_GUIDE_ORDER.indexOf(y); return (i < 0 ? 999 : i) - (j < 0 ? 999 : j); });
     order.forEach(g => sel.append(new Option(g, g)));
     const x = mk('button', '', 'Close'); x.onclick = close;
@@ -63,14 +63,18 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
       if (ALLM && !gsel) { grid.append(mk('div', 'g-grp', 'Pick a group above')); return; }
       let shown = 0;
       for (const g of order) {
-        if (gsel && g !== gsel) continue;
+        if (gsel && gsel !== '__starred__' && g !== gsel) continue;
         let header = null;
         groups[g].forEach((c, idx) => {
           const progs = ((guide.channels && guide.channels[c.id]) || []).filter(p => p.e > t0 && p.s < t1);
           if (term && !(c.name.toLowerCase().includes(term) || progs.some(p => p.t.toLowerCase().includes(term)))) return;
+          if (gsel === '__starred__' && !(window.tvIsStar && window.tvIsStar(c))) return;
           if (!header) { header = mk('div', 'g-grp', g); grid.append(header); }
           const row = mk('div', 'g-row' + (c.id === cur ? ' cur' : '')), lab = mk('div', 'g-lab'), trk = mk('div', 'g-trk');
-          lab.append(mk('i', '', c.chno || c.number || c.num || (idx + 1)), mk('span', '', c.name));
+          const starOn = !!(window.tvIsStar && window.tvIsStar(c));
+          lab.append(mk('i', '', c.chno || c.number || c.num || (idx + 1)), mk('span', '', (starOn ? '★ ' : '') + c.name));
+          lab.title = 'Right-click to ' + (starOn ? 'unstar' : 'star');
+          lab.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); if (window.tvToggleStar) window.tvToggleStar(c); render(); };
           lab.onclick = () => tune(c);
           if (!progs.length) {
             const p = mk('div', 'g-p none', 'No guide data'); p.style.left = '0'; p.style.width = HOURS * 60 * PX - 2 + 'px'; p.onclick = () => tune(c); trk.append(p);
@@ -93,13 +97,18 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
     const need = () => {
       const gs = sel.value; if (!ALLM || !gs || loaded[gs]) return;
       loaded[gs] = 1;
-      const raws = [...new Set((groups[gs] || []).map(c => c.group))];
+      const raws = [...new Set((gs === '__starred__' ? chans.filter(c => window.tvIsStar && window.tvIsStar(c)) : (groups[gs] || [])).map(c => c.group))];
       Promise.all(raws.map(r => getJSON('/api/guide?all=1&group=' + encodeURIComponent(r)).catch(() => ({ channels: {} })))).then(rs => {
         rs.forEach(r => Object.assign(guide.channels, r.channels || {}));
         if (overlay) render();
       });
     };
     q.oninput = render; sel.onchange = () => { need(); render(); };
+    const onStar = () => {
+      if (!body.isConnected) { window.removeEventListener('tv-starred', onStar); return; }
+      loaded['__starred__'] = 0; need(); render();
+    };
+    window.addEventListener('tv-starred', onStar);
     if (ALLM && order.length) sel.value = order[0];
     need(); render();
     const cr = body.querySelector('.cur'); if (cr) cr.scrollIntoView({ block: 'center' });
@@ -254,7 +263,7 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
     let loadedG = {};
     function loadGroup(gs) {
       if (!gs || loadedG[gs]) return; loadedG[gs] = 1;
-      const raws = [...new Set((groups[gs] || []).map(c => c.group))];
+      const raws = [...new Set((gs === '__starred__' ? chans.filter(c => window.tvIsStar && window.tvIsStar(c)) : (groups[gs] || [])).map(c => c.group))];
       Promise.all(raws.map(r => getJSON('/api/guide?all=1&group=' + encodeURIComponent(r)).catch(() => ({ channels: {} })))).then(rs => {
         if (!ov) return;
         rs.forEach(r => Object.assign(guide.channels, r.channels || {}));
@@ -344,9 +353,9 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
       order = []; groups = {};
       chans.forEach(c => { const g = gkey(c); if (!groups[g]) { groups[g] = []; order.push(g); } groups[g].push(c); });
       order.sort((x, y) => { const i = ORD.indexOf(x), j = ORD.indexOf(y); return (i < 0 ? 999 : i) - (j < 0 ? 999 : j); });
-      sel.textContent = ''; sel.append(new Option('ALL', ''));
+      sel.textContent = ''; sel.append(new Option('ALL', '')); sel.append(new Option('★ STARRED', '__starred__'));
       order.forEach(g => sel.append(new Option(g, g)));
-      if (keep && groups[keep]) sel.value = keep; else if (window.tvAllMode && order.length) sel.value = order[0];
+      if (keep && (groups[keep] || keep === '__starred__')) sel.value = keep; else if (window.tvAllMode && order.length) sel.value = order[0];
     }
 
     function renderList() {
@@ -354,12 +363,15 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
       const gsel = sel.value; let n = 0;
       const frag = document.createDocumentFragment();
       order.forEach(g => {
-        if (gsel && g !== gsel) return;
+        if (gsel && gsel !== '__starred__' && g !== gsel) return;
         groups[g].slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).forEach(c => {
           if (!match(c)) return;
+          if (gsel === '__starred__' && !(window.tvIsStar && window.tvIsStar(c))) return;
           const p = curProg(c);
           const r = mk('div', 'ops-lr'); r.dataset.id = c.id;
-          r.append(mk('span', 'n', c.name), mk('span', 'g', g), mk('span', 'w', p ? p.t : ''));
+          const starOn = !!(window.tvIsStar && window.tvIsStar(c));
+          r.append(mk('span', 'n', (starOn ? '★ ' : '') + c.name), mk('span', 'g', g), mk('span', 'w', p ? p.t : ''));
+          r.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); if (window.tvToggleStar) window.tvToggleStar(c); delete loadedG['__starred__']; rerender(); };
           r.title = c.name + (p ? '\n' + p.t : '');
           r.onclick = () => tune(c);
           frag.append(r); n++;
@@ -383,14 +395,16 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
       const gsel = sel.value; let shown = 0;
       if (window.tvAllMode) { if (!gsel) { gi.append(mk('div', 'ops-empty', 'All channels: pick a group to load its guide')); return; } loadGroup(gsel); }
       order.forEach(g => {
-        if (gsel && g !== gsel) return;
-        const rows = groups[g].filter(c => progsOf(c).some(p => p.e > t0 && p.s < t1) && match(c));
+        if (gsel && gsel !== '__starred__' && g !== gsel) return;
+        const rows = groups[g].filter(c => progsOf(c).some(p => p.e > t0 && p.s < t1) && match(c) && (gsel !== '__starred__' || (window.tvIsStar && window.tvIsStar(c))));
         if (!rows.length) return;
         gi.append(mk('div', 'ops-grp', g.toUpperCase()));
         rows.forEach((c, idx) => {
           const row = mk('div', 'ops-row'), lab = mk('div', 'ops-lab'), trk = mk('div', 'ops-trk');
           row.dataset.id = c.id;
-          lab.append(mk('i', '', String(idx + 1)), mk('span', '', c.name));
+          const starOn = !!(window.tvIsStar && window.tvIsStar(c));
+          lab.append(mk('i', '', String(idx + 1)), mk('span', '', (starOn ? '★ ' : '') + c.name));
+          lab.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); if (window.tvToggleStar) window.tvToggleStar(c); delete loadedG['__starred__']; rerender(); };
           lab.onclick = () => tune(c);
           progsOf(c).filter(p => p.e > t0 && p.s < t1).forEach(p => {
             const s = Math.max(p.s, t0), e = Math.min(p.e, t1);
@@ -460,6 +474,9 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
     }, 30000);
     cleanup.push(() => clearInterval(iv));
     cleanup.push(() => clearTimeout(dt));
+    const onStar = () => { if (ov) { delete loadedG['__starred__']; rerender(); } };
+    window.addEventListener('tv-starred', onStar);
+    cleanup.push(() => window.removeEventListener('tv-starred', onStar));
 
     sync();
     await load();

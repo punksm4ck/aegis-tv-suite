@@ -98,6 +98,37 @@
 
   // (one-shot unmute handler removed: volume controls below manage mute/unmute)
 
+  // ---- starred channels (normalized names; same keys as the Mac app) ----
+  var STAR_KEY = 'tv_starred', starRaw = null, starMap = {};
+  function normName(s) {
+    s = String(s || '').toLowerCase().replace(/\([^)]*\)|\[[^\]]*\]/g, ' ');
+    return s.replace(/\b(pluto|hd|channel)\b/g, ' ').replace(/[^a-z0-9]/g, '');
+  }
+  function starSet() {
+    var raw = '';
+    try { raw = localStorage.getItem(STAR_KEY) || ''; } catch (e) {}
+    if (raw !== starRaw) {
+      starRaw = raw; starMap = {};
+      try {
+        var a = JSON.parse(raw || '[]');
+        if (Array.isArray(a)) a.forEach(function (k) { if (typeof k === 'string') starMap[k] = 1; });
+      } catch (e) {}
+    }
+    return starMap;
+  }
+  function isStar(c) { return !!starSet()[normName(c.name)]; }
+  function toggleStar(c) {
+    var k = normName(c.name), m = starSet();
+    if (!k) return false;
+    var on = !m[k], keys = Object.keys(m);
+    if (on) keys.push(k); else keys = keys.filter(function (x) { return x !== k; });
+    try { localStorage.setItem(STAR_KEY, JSON.stringify(keys)); } catch (e) {}
+    try { window.dispatchEvent(new CustomEvent('tv-starred')); } catch (e) {}
+    return on;
+  }
+  window.tvIsStar = isStar;
+  window.tvToggleStar = toggleStar;
+
   // ---- picker ----
   var RECENT_KEY = 'tv_recent_channels';
   function getRecent() {
@@ -120,9 +151,15 @@
   }
   function renderList() {
     var term = q.value.trim().toLowerCase();
-    shown = !term ? recentChannels() : channels.filter(function (c) {
-      return c.name.toLowerCase().indexOf(term) !== -1 || c.group.toLowerCase().indexOf(term) !== -1;
-    });
+    if (!term) {
+      var ss = starSet();
+      var rec = recentChannels().filter(function (c) { return !ss[normName(c.name)]; });
+      shown = channels.filter(function (c) { return ss[normName(c.name)]; }).concat(rec);
+    } else {
+      shown = channels.filter(function (c) {
+        return c.name.toLowerCase().indexOf(term) !== -1 || c.group.toLowerCase().indexOf(term) !== -1;
+      });
+    }
     if (sel >= shown.length) sel = Math.max(0, shown.length - 1);
     list.textContent = '';
     shown.forEach(function (c, i) {
@@ -130,7 +167,7 @@
       if (i === sel) li.className = 'sel';
       if (c.id === currentId) li.className += ' cur';
       li.dataset.i = i;
-      var n = document.createElement('span'); n.className = 'n'; n.textContent = c.name;
+      var n = document.createElement('span'); n.className = 'n'; n.textContent = (isStar(c) ? '★ ' : '') + c.name;
       var g = document.createElement('span'); g.className = 'g'; g.textContent = c.group.split(';')[0];
       li.appendChild(n); li.appendChild(g);
       list.appendChild(li);
@@ -176,7 +213,16 @@
 
   document.addEventListener('contextmenu', function (e) {
     e.preventDefault();
-    if (picker.classList.contains('open')) { closePicker(); return; }
+    if (picker.classList.contains('open')) {
+      var li = e.target.closest ? e.target.closest('#list li') : null;
+      if (li) {
+        var sc = shown[parseInt(li.dataset.i, 10)];
+        if (sc) { toggleStar(sc); renderList(); }
+        return;
+      }
+      closePicker();
+      return;
+    }
     openPicker(e.clientX, e.clientY);
   });
   picker.addEventListener('mousedown', function (e) {
@@ -208,6 +254,9 @@
 
   window.tvTune = function (id) { var c = channels.find(function (x) { return x.id === id; }); if (c) { closePicker(); play(c); } };
   window.tvCurrent = function () { return currentId; };
+  window.tvCurrentChan = function () { return channels.find(function (x) { return x.id === currentId; }) || null; };
+  window.tvSay = say;
+  window.tvOpenPicker = function () { openPicker(Math.max(12, window.innerWidth / 2 - 190), 80); };
   window.tvHls = function () { return hls; };
   // ---- boot ----
   fetch('/api/channels?all=1', { credentials: 'same-origin' })
@@ -269,6 +318,7 @@
     '#vol input{width:110px;accent-color:#6d8cff;cursor:pointer}' +
     '#vol .lbl{min-width:34px;text-align:right;color:#a9acb8;font-variant-numeric:tabular-nums}' +
     '#vol .tip{display:none;color:#fff}#vol.hint .tip{display:inline}#vol.hint input,#vol.hint .lbl{display:none}' +
+    '#vol svg.on{fill:#6d8cff;stroke:#6d8cff}#vol.hint .star{display:none}' +
     '@media(max-width:520px){#vol input{width:80px}}';
   document.head.appendChild(css);
 
@@ -285,6 +335,10 @@
   range.setAttribute('aria-label', 'Volume');
   var lbl = document.createElement('span'); lbl.className = 'lbl';
   box.appendChild(btn); box.appendChild(tip); box.appendChild(range); box.appendChild(lbl);
+  var starBtn = document.createElement('button');
+  starBtn.type = 'button';
+  starBtn.className = 'star';
+  box.appendChild(starBtn);
   document.body.appendChild(box);
 
   var ICON_ON = '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
@@ -297,6 +351,7 @@
     range.value = String(Math.round((userMuted ? 0 : vol) * 100));
     lbl.textContent = Math.round((userMuted ? 0 : vol) * 100) + '%';
     box.classList.toggle('hint', !hasActivation());
+    renderStar();
   }
   function apply() {
     try { video.volume = vol; } catch (e) {}
@@ -327,6 +382,33 @@
     else if (d.documentElement.requestFullscreen) { d.documentElement.requestFullscreen().catch(function () {}); }
   }
 
+  var STAR_PATH = '<polygon points="12 2 15.1 8.6 22 9.6 17 14.5 18.2 21.5 12 18.2 5.8 21.5 7 14.5 2 9.6 8.9 8.6"/>';
+  var starShown = null;
+  function renderStar() {
+    if (!starBtn) return;
+    var c = window.tvCurrentChan && window.tvCurrentChan();
+    var on = !!(c && window.tvIsStar && window.tvIsStar(c));
+    if (starShown === on) return;
+    starShown = on;
+    starBtn.innerHTML = '<svg viewBox="0 0 24 24"' + (on ? ' class="on"' : '') + '>' + STAR_PATH + '</svg>';
+    starBtn.setAttribute('aria-label', on ? 'Unstar channel' : 'Star channel');
+    starBtn.title = on ? 'Unstar (B)' : 'Star channel (B)';
+  }
+  function starCurrent() {
+    var c = window.tvCurrentChan && window.tvCurrentChan();
+    if (!c || !window.tvToggleStar) return;
+    var on = window.tvToggleStar(c);
+    if (window.tvSay) window.tvSay((on ? 'Starred: ' : 'Unstarred: ') + c.name);
+    renderStar(); reveal();
+  }
+  function togglePiP() {
+    try {
+      if (document.pictureInPictureElement) document.exitPictureInPicture().catch(function () {});
+      else if (video.requestPictureInPicture) video.requestPictureInPicture().catch(function () {});
+    } catch (e) {}
+  }
+  starBtn.addEventListener('click', starCurrent);
+  window.addEventListener('tv-starred', renderStar);
   btn.addEventListener('click', toggleMute);
   range.addEventListener('input', function () { setVol(parseInt(range.value, 10) / 100); });
 
@@ -370,6 +452,10 @@
     else if (e.key === 'ArrowUp' && videoOnTop()) { setVol(vol + 0.05); e.preventDefault(); }
     else if (e.key === 'ArrowDown' && videoOnTop()) { setVol(vol - 0.05); e.preventDefault(); }
     else if (e.key === 'f' || e.key === 'F') { toggleFullscreen(); e.preventDefault(); }
+    else if ((e.key === 'b' || e.key === 'B') && videoOnTop()) { starCurrent(); e.preventDefault(); }
+    else if ((e.key === 'p' || e.key === 'P') && videoOnTop()) { togglePiP(); e.preventDefault(); }
+    else if ((e.key === 'c' || e.key === 'C') && videoOnTop()) { if (window.tvOpenPicker) window.tvOpenPicker(); e.preventDefault(); }
+    else if (e.key === '?' && videoOnTop()) { if (window.tvSay) window.tvSay('M mute · F fullscreen · Space pause · S +30s · L live · B star · P pip · C channels · G guide'); e.preventDefault(); }
   });
   video.addEventListener('dblclick', toggleFullscreen);
 
