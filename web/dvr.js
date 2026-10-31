@@ -54,9 +54,9 @@ function mount(app, { requireAuth, jsonOnly, getPlaylist, dataDir, publicDir }) 
   function launch(j) {
     const ch = getPlaylist().byId.get(j.channelId);
     if (!ch) { j.status = 'failed'; return false; }
-    const args = ['-hide_banner', '-loglevel', 'error', '-user_agent', UA,
+    const args = ['-hide_banner', '-loglevel', 'error', '-user_agent', ch.ua || UA].concat(ch.ref ? ['-referer', ch.ref] : [], [
       '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
-      '-i', ch.url, '-map', '0:v?', '-map', '0:a?', '-c', 'copy', '-f', 'mpegts', '-y', j.path];
+      '-i', ch.url, '-map', '0:v?', '-map', '0:a?', '-c', 'copy', '-f', 'mpegts', '-y', j.path]);
     const a = active.get(j.id) || { tries: 0 };
     let child;
     try { child = spawn(FFMPEG, args, { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true }); }

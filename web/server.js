@@ -71,7 +71,11 @@ function parseM3U(text) {
       const g = rest.match(/group-title="([^"]*)"/);
       const tn = rest.match(/tvg-name="([^"]*)"/);
       const ti = rest.match(/tvg-id="([^"]*)"/);
-      cur = { name: name || (tn && tn[1]) || 'Unknown', group: (g && g[1]) || 'Uncategorized', tvgId: ti ? ti[1] : '' };
+      const hr = rest.match(/http-referrer="([^"]*)"/), hu = rest.match(/http-user-agent="([^"]*)"/);
+      cur = { name: name || (tn && tn[1]) || 'Unknown', group: (g && g[1]) || 'Uncategorized', tvgId: ti ? ti[1] : '', ref: hr ? hr[1] : '', ua: hu ? hu[1] : '' };
+    } else if (/^#EXTVLCOPT:/i.test(line)) {
+      const m = line.match(/^#EXTVLCOPT:\s*http-(referrer|referer|user-agent)\s*=\s*(.*)$/i);
+      if (m && cur) { if (/user-agent/i.test(m[1])) cur.ua = m[2].trim(); else cur.ref = m[2].trim(); }
     } else if (!line.startsWith('#')) {
       if (/^https?:\/\//i.test(line)) {
         const c = cur || { name: 'Unknown', group: 'Uncategorized' };
@@ -133,19 +137,21 @@ async function assertPublicHost(urlStr) {
 }
 const b64u = (s) => Buffer.from(s, 'utf8').toString('base64url');
 const sign = (s) => crypto.createHmac('sha256', SECRET).update(s).digest('base64url').slice(0, 22);
-function makeToken(url) { const p = b64u(url); return `${p}.${sign(p)}`; }
+function makeToken(url, h) { const p = b64u(h && (h.ref || h.ua) ? JSON.stringify({ u: url, r: h.ref || '', a: h.ua || '' }) : url); return `${p}.${sign(p)}`; }
 function readToken(tok) {
   const i = tok.lastIndexOf('.');
   if (i < 1) return null;
   const p = tok.slice(0, i), sig = tok.slice(i + 1);
   const want = sign(p);
   if (sig.length !== want.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want))) return null;
-  return Buffer.from(p, 'base64url').toString('utf8');
+  const raw = Buffer.from(p, 'base64url').toString('utf8');
+  if (raw[0] !== '{') return { url: raw, h: null };
+  try { const j = JSON.parse(raw); return { url: j.u, h: { ref: j.r || '', ua: j.a || '' } }; } catch (_) { return null; }
 }
-const proxyPath = (url) => `/p/${makeToken(url)}`;
+const proxyPath = (url, h) => `/p/${makeToken(url, h)}`;
 
-function rewriteManifest(text, baseUrl) {
-  const abs = (ref) => { try { return proxyPath(new URL(ref, baseUrl).href); } catch (_) { return ref; } };
+function rewriteManifest(text, baseUrl, h) {
+  const abs = (ref) => { try { return proxyPath(new URL(ref, baseUrl).href, h); } catch (_) { return ref; } };
   return text.split(/\r?\n/).map((line) => {
     const t = line.trim();
     if (!t) return line;
@@ -154,12 +160,13 @@ function rewriteManifest(text, baseUrl) {
   }).join('\n');
 }
 
-async function upstreamFetch(url, req, { manifestHint }) {
+async function upstreamFetch(url, req, { manifestHint, h }) {
   await assertPublicHost(url);
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), manifestHint ? 12000 : 20000);
   req.on('close', () => ac.abort());
-  const headers = { 'User-Agent': UPSTREAM_UA, Accept: '*/*' };
+  const headers = { 'User-Agent': (h && h.ua) || UPSTREAM_UA, Accept: '*/*' };
+  if (h && h.ref) headers.Referer = h.ref;
   if (req.headers.range) headers.Range = req.headers.range;
   let res;
   try {
@@ -178,9 +185,9 @@ function logUp(url, what) {   // logs the upstream host only (playlist URLs can 
   console.log('[tv] upstream ' + host + ': ' + what);
 }
 
-async function relay(url, req, res, manifestHint) {
+async function relay(url, req, res, manifestHint, h) {
   let up;
-  try { up = await upstreamFetch(url, req, { manifestHint }); }
+  try { up = await upstreamFetch(url, req, { manifestHint, h }); }
   catch (e) { logUp(url, 'fetch failed: ' + ((e && e.name) || '') + ' ' + ((e && e.message) || '')); return res.status(502).type('text/plain').send('upstream unavailable'); }
   if (!up.ok && up.status !== 206) { logUp(url, 'HTTP ' + up.status); return res.status(up.status === 404 ? 404 : 502).type('text/plain').send('upstream error ' + up.status); }
 
@@ -190,7 +197,7 @@ async function relay(url, req, res, manifestHint) {
   if (looksManifest) {
     const buf = Buffer.from(await up.arrayBuffer());
     if (buf.length < 2 * 1024 * 1024 && buf.slice(0, 7).toString() === '#EXTM3U') {
-      res.type('application/vnd.apple.mpegurl').send(rewriteManifest(buf.toString('utf8'), up.url || url));
+      res.type('application/vnd.apple.mpegurl').send(rewriteManifest(buf.toString('utf8'), up.url || url, h));
     } else {
       res.type(ctype || 'application/octet-stream').send(buf); // wasn't really a manifest
     }
@@ -328,13 +335,13 @@ app.get('/api/channels', requireAuth, (req, res) => {
 app.get('/s/:id', requireAuth, async (req, res) => {
   const ch = getPlaylist().byId.get(req.params.id);
   if (!ch) return res.status(404).type('text/plain').send('no such channel');
-  await relay(ch.url, req, res, true);
+  await relay(ch.url, req, res, true, { ref: ch.ref, ua: ch.ua });
 });
 // Signed relay for variant playlists, segments, keys.
 app.get('/p/:token', requireAuth, async (req, res) => {
-  const url = readToken(req.params.token);
-  if (!url) return res.status(400).type('text/plain').send('bad token');
-  await relay(url, req, res, false);
+  const tk = readToken(req.params.token);
+  if (!tk || !tk.url) return res.status(400).type('text/plain').send('bad token');
+  await relay(tk.url, req, res, false, tk.h);
 });
 
 // ---------- DVR (admin only) ----------
