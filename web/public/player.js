@@ -61,6 +61,7 @@
       });
       hls.on(Hls.Events.FRAG_BUFFERED, function () { if (currentId === ch.id) hideSay(); });
       hls.on(Hls.Events.ERROR, function (_e, d) {
+        if (d.fatal || /buffer|append|quota|parsing|discontinuity/i.test(d.details || '')) console.warn('[tv] hls', d.fatal ? 'FATAL' : 'warn', d.type, d.details);
         if (!d.fatal) return;
         if (d.response && d.response.code === 401) { location.href = '/login'; return; }
         if (d.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 3) {
@@ -509,20 +510,21 @@
     'font:500 13px/1 ui-monospace,"SF Mono",Consolas,monospace;opacity:0;pointer-events:none;transition:opacity .25s;' +
     'backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);user-select:none;-webkit-user-select:none}' +
     '#ts.show{opacity:1;pointer-events:auto}' +
-    '#ts button{all:unset;cursor:pointer;display:flex;align-items:center;justify-content:center;min-width:30px;height:30px;' +
-    'padding:0 8px;box-sizing:border-box;border-radius:8px;color:#e8e8ea}' +
+    '#ts button{all:unset;cursor:pointer;display:flex;align-items:center;justify-content:center;min-width:40px;height:40px;' +
+    'padding:0 12px;box-sizing:border-box;border-radius:8px;color:#e8e8ea}#ts button *{pointer-events:none}' +
     '#ts button:hover{background:#262a3a}#ts button:focus-visible{outline:2px solid #6d8cff}' +
     '#ts svg{width:18px;height:18px;fill:#e8e8ea;stroke:none}' +
-    '#ts .txt{white-space:nowrap;color:#a9acb8;letter-spacing:.04em}' +
+    '#ts .txt{white-space:nowrap;min-width:30ch;color:#a9acb8;letter-spacing:.04em}#ts .dim{opacity:.4}' +
     '#ts.paused .txt{color:#ffd166}#ts.behind .txt{color:#6d8cff}' +
     '#ts .live{font-weight:700;letter-spacing:.08em;color:#ff5d5d}#ts .live[hidden]{display:none}' +
     '#ts .skip{font-weight:700;letter-spacing:.04em;color:#a9d1ff}#ts .skip[hidden]{display:none}' +
     '#ts .back{font-weight:700;letter-spacing:.04em;color:#a9d1ff}' +
-    '#tsbar{position:fixed;left:16px;right:16px;bottom:72px;z-index:5;display:flex;align-items:center;gap:12px;' +
+    '#tsbar{position:fixed;left:16px;right:16px;bottom:84px;z-index:5;display:flex;align-items:center;gap:12px;' +
     'padding:10px 14px;border-radius:12px;background:rgba(10,11,14,.78);color:#a9acb8;' +
     'font:500 12px/1 ui-monospace,"SF Mono",Consolas,monospace;opacity:0;pointer-events:none;transition:opacity .25s;' +
     'backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);user-select:none;-webkit-user-select:none;touch-action:none;cursor:pointer}' +
     '#tsbar.show{opacity:1;pointer-events:auto}' +
+    '#tsbar *{pointer-events:none}' +
     '#tsbar .trk{position:relative;flex:1;height:8px;border-radius:4px;background:rgba(255,255,255,.14)}' +
     '#tsbar .bufs{position:absolute;top:0;right:0;bottom:0;left:0;border-radius:4px;overflow:hidden}' +
     '#tsbar .bufs i{position:absolute;top:0;bottom:0;background:rgba(255,255,255,.3)}' +
@@ -582,11 +584,16 @@
     } else {
       label = 'LIVE';
     }
-    txt.textContent = label;
-    ppBtn.innerHTML = userPaused ? ICON_PLAY : ICON_PAUSE;
-    ppBtn.setAttribute('aria-label', userPaused ? 'Resume' : 'Pause');
-    liveBtn.hidden = !userPaused && behind <= 4;
-    skipBtn.hidden = !userPaused && behind <= 4;
+    if (txt.textContent !== label) txt.textContent = label;
+    var ppKey = userPaused ? 'play' : 'pause';
+    if (ppKey !== ppShown) {
+      ppShown = ppKey;
+      ppBtn.innerHTML = userPaused ? ICON_PLAY : ICON_PAUSE;
+      ppBtn.setAttribute('aria-label', userPaused ? 'Resume' : 'Pause');
+    }
+    var atLive = !userPaused && behind <= 4;
+    liveBtn.classList.toggle('dim', atLive);
+    skipBtn.classList.toggle('dim', atLive);
     box.classList.toggle('paused', userPaused);
     box.classList.toggle('behind', !userPaused && behind > 4);
     var showIt = userPaused || behind > 4 || Date.now() < activeUntil || dragging;
@@ -599,7 +606,20 @@
   function goLive() {
     var t = liveTarget();
     userPaused = false;
-    if (isFinite(t)) { try { video.currentTime = t; } catch (e) {} }
+    if (isFinite(t)) {
+      var before = bufSnapshot(), end = bufRange()[1];
+      if (t > end - 1 && t - end <= GAP_OK) {
+        // Live point is just past the buffered video: stay inside the buffer and let hls.js load up to live,
+        // instead of jumping across a gap (jumping across a gap is when the player can drop what is buffered).
+        try { video.currentTime = Math.max(video.currentTime, end - 1.5); } catch (e) {}
+        chasePos = video.currentTime; chaseStart = Date.now();
+        chaseLive(60);
+      } else {
+        try { video.currentTime = t; } catch (e) {}
+      }
+      setTimeout(function () { console.log('[tv] go live. buffered before:', before, ' after:', bufSnapshot()); }, 1500);
+    }
+    activeUntil = Date.now() + 6000;
     startPlayback();
     reveal();
   }
@@ -656,6 +676,26 @@
   skipBtn.addEventListener('click', function () { skipAhead(30); });
   liveBtn.addEventListener('click', goLive);
   backBtn.addEventListener('click', function () { skipBack(30); });
+
+  // ---- go-live helpers ----
+  var GAP_OK = 30, chaseTimer = null, chasePos = 0, chaseStart = 0, ppShown = null;
+  function bufSnapshot() {
+    var b = video.buffered, o = [];
+    for (var i = 0; i < b.length; i++) o.push(b.start(i).toFixed(0) + '-' + b.end(i).toFixed(0));
+    return '[' + o.join(' ') + '] at ' + (video.currentTime || 0).toFixed(0);
+  }
+  // Follow the live edge without jumping over a gap: wait until the buffer reaches live, then step to it.
+  function chaseLive(tries) {
+    clearTimeout(chaseTimer);
+    if (userPaused || dragging || tries <= 0) return;
+    var cur = video.currentTime, elapsed = (Date.now() - chaseStart) / 1000;
+    if (cur < chasePos - 1.5 || cur > chasePos + elapsed + 3) return;   // viewer moved the playhead: stop chasing
+    var lt = liveTarget();
+    if (!isFinite(lt)) return;
+    if (lt <= bufRange()[1] - 1) { try { video.currentTime = lt; } catch (e) {} return; }
+    chaseTimer = setTimeout(function () { chaseLive(tries - 1); }, 500);
+  }
+  window.tvBuf = bufSnapshot;
 
   // Rewind by sec seconds, never before the start of what is buffered.
   function skipBack(sec) {
@@ -768,7 +808,7 @@
   });
 
   // New channel / teardown: forget any pause.
-  video.addEventListener('emptied', function () { userPaused = false; render(); });
+  video.addEventListener('emptied', function () { userPaused = false; clearTimeout(chaseTimer); render(); });
 
   document.addEventListener('keydown', function (e) {
     if (modalOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
