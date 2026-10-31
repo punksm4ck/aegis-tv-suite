@@ -47,7 +47,8 @@
         maxBufferLength: 600,
         maxMaxBufferLength: 600,
         maxBufferSize: 300 * 1000 * 1000,
-        backBufferLength: 90,
+        backBufferLength: 600,
+        liveBackBufferLength: 600,
         manifestLoadingMaxRetry: 2,
         levelLoadingMaxRetry: 3,
         fragLoadingMaxRetry: 4,
@@ -515,6 +516,24 @@
     '#ts.paused .txt{color:#ffd166}#ts.behind .txt{color:#6d8cff}' +
     '#ts .live{font-weight:700;letter-spacing:.08em;color:#ff5d5d}#ts .live[hidden]{display:none}' +
     '#ts .skip{font-weight:700;letter-spacing:.04em;color:#a9d1ff}#ts .skip[hidden]{display:none}' +
+    '#ts .back{font-weight:700;letter-spacing:.04em;color:#a9d1ff}' +
+    '#tsbar{position:fixed;left:16px;right:16px;bottom:72px;z-index:5;display:flex;align-items:center;gap:12px;' +
+    'padding:10px 14px;border-radius:12px;background:rgba(10,11,14,.78);color:#a9acb8;' +
+    'font:500 12px/1 ui-monospace,"SF Mono",Consolas,monospace;opacity:0;pointer-events:none;transition:opacity .25s;' +
+    'backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);user-select:none;-webkit-user-select:none;touch-action:none;cursor:pointer}' +
+    '#tsbar.show{opacity:1;pointer-events:auto}' +
+    '#tsbar .trk{position:relative;flex:1;height:8px;border-radius:4px;background:rgba(255,255,255,.14)}' +
+    '#tsbar .bufs{position:absolute;top:0;right:0;bottom:0;left:0;border-radius:4px;overflow:hidden}' +
+    '#tsbar .bufs i{position:absolute;top:0;bottom:0;background:rgba(255,255,255,.3)}' +
+    '#tsbar .played{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:4px;background:#6d8cff}' +
+    '#tsbar .thumb{position:absolute;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;' +
+    'background:#fff;box-shadow:0 0 0 3px rgba(109,140,255,.45);transition:transform .1s}' +
+    '#tsbar.drag .thumb{transform:scale(1.4)}' +
+    '#tsbar .tip{display:none;position:absolute;bottom:20px;transform:translateX(-50%);padding:5px 9px;border-radius:6px;' +
+    'background:#16171b;border:1px solid #2b2d34;color:#fff;white-space:nowrap}' +
+    '#tsbar.drag .tip{display:block}' +
+    '#tsbar .hi{color:#ff5d5d;font-weight:700;letter-spacing:.08em}' +
+    '@media(max-width:700px){#tsbar{bottom:128px}}' +
     '@media(max-width:700px){#ts{right:auto;left:16px;bottom:64px;max-width:calc(100vw - 32px)}#ts .txt{white-space:normal}}';
   document.head.appendChild(css);
 
@@ -531,7 +550,10 @@
   var skipBtn = document.createElement('button');
   skipBtn.type = 'button'; skipBtn.className = 'skip'; skipBtn.textContent = '+30s';
   skipBtn.setAttribute('aria-label', 'Skip ahead 30 seconds');
-  box.appendChild(ppBtn); box.appendChild(txt); box.appendChild(skipBtn); box.appendChild(liveBtn);
+  var backBtn = document.createElement('button');
+  backBtn.type = 'button'; backBtn.className = 'back'; backBtn.textContent = '-30s';
+  backBtn.setAttribute('aria-label', 'Rewind 30 seconds');
+  box.appendChild(backBtn); box.appendChild(ppBtn); box.appendChild(txt); box.appendChild(skipBtn); box.appendChild(liveBtn);
   document.body.appendChild(box);
 
   var ICON_PAUSE = '<svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
@@ -565,7 +587,9 @@
     skipBtn.hidden = !userPaused && behind <= 4;
     box.classList.toggle('paused', userPaused);
     box.classList.toggle('behind', !userPaused && behind > 4);
-    box.classList.toggle('show', userPaused || behind > 4 || Date.now() < activeUntil);
+    var showIt = userPaused || behind > 4 || Date.now() < activeUntil || dragging;
+    box.classList.toggle('show', showIt);
+    renderBar(showIt);
   }
   function reveal() { activeUntil = Date.now() + 3000; render(); }
 
@@ -629,6 +653,116 @@
   ppBtn.addEventListener('click', toggle);
   skipBtn.addEventListener('click', function () { skipAhead(30); });
   liveBtn.addEventListener('click', goLive);
+  backBtn.addEventListener('click', function () { skipBack(30); });
+
+  // Rewind by sec seconds, never before the start of what is buffered.
+  function skipBack(sec) {
+    if (video.readyState < 2) return;
+    var ct = video.currentTime, lo = bufRange()[0] + 0.1;
+    if (ct - lo <= 0.5) { note('At the start of the buffer.'); reveal(); return; }
+    var t = Math.max(ct - sec, lo);
+    try { video.currentTime = t; } catch (e) {}
+    if (t > ct - sec + 0.5) note('Rewound ' + Math.round(ct - t) + 's (start of buffer).');
+    reveal();
+  }
+
+  // ---- timeline: drag back through the buffered recording ----
+  var dragging = false, dragT = 0, dragWasPlaying = false, lastSeekAt = 0;
+  var bar = document.createElement('div');
+  bar.id = 'tsbar';
+  bar.setAttribute('aria-label', 'Timeshift timeline');
+  bar.innerHTML = '<span class="lo"></span><div class="trk"><div class="bufs"></div><div class="played"></div><div class="thumb"></div><div class="tip"></div></div><span class="hi">LIVE</span>';
+  document.body.appendChild(bar);
+  var trk = bar.querySelector('.trk'), bufsEl = bar.querySelector('.bufs'), playedEl = bar.querySelector('.played'),
+      thumbEl = bar.querySelector('.thumb'), tipEl = bar.querySelector('.tip'), loEl = bar.querySelector('.lo');
+
+  // Window shown on the bar: oldest buffered second .. live edge.
+  function barWindow() {
+    var b = video.buffered, n = b.length;
+    if (!n) return null;
+    var s = b.start(0), e = b.end(n - 1), lt = liveTarget();
+    if (isFinite(lt) && lt > e) e = lt;
+    return e - s > 2 ? [s, e] : null;
+  }
+  function clampBuffered(t) {
+    var b = video.buffered, best = t, bd = Infinity;
+    for (var i = 0; i < b.length; i++) {
+      var a = b.start(i) + 0.1, z = b.end(i) - 1;
+      if (z < a) continue;
+      if (t >= a && t <= z) return t;
+      var d = Math.min(Math.abs(t - a), Math.abs(t - z));
+      if (d < bd) { bd = d; best = t < a ? a : z; }
+    }
+    return best;
+  }
+  function timeAt(clientX) {
+    var w = barWindow();
+    if (!w) return null;
+    var r = trk.getBoundingClientRect();
+    var f = r.width ? Math.max(0, Math.min(1, (clientX - r.left) / r.width)) : 0;
+    return w[0] + f * (w[1] - w[0]);
+  }
+  function renderBar(show) {
+    var w = barWindow();
+    bar.classList.toggle('show', !!show && !!w);
+    if (!show || !w) return;
+    var s = w[0], e = w[1], span = e - s, b = video.buffered, html = '';
+    for (var i = 0; i < b.length; i++) {
+      html += '<i style="left:' + (100 * (b.start(i) - s) / span) + '%;width:' + (100 * (b.end(i) - b.start(i)) / span) + '%"></i>';
+    }
+    bufsEl.innerHTML = html;
+    var t = dragging ? dragT : video.currentTime;
+    var f = Math.max(0, Math.min(1, (t - s) / span)) * 100;
+    playedEl.style.width = f + '%';
+    thumbEl.style.left = f + '%';
+    tipEl.style.left = f + '%';
+    tipEl.textContent = (e - t < 4) ? 'LIVE' : '-' + fmt(e - t);
+    loEl.textContent = '-' + fmt(span);
+  }
+  function seekTo(t, force) {
+    var now = Date.now();
+    if (!force && now - lastSeekAt < 120) return;
+    lastSeekAt = now;
+    try { video.currentTime = clampBuffered(t); } catch (e) {}
+  }
+  bar.addEventListener('pointerdown', function (e) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    var t = timeAt(e.clientX);
+    if (t === null) return;
+    dragging = true; dragT = t;
+    dragWasPlaying = !userPaused && !video.paused;
+    if (dragWasPlaying) video.pause();
+    try { bar.setPointerCapture(e.pointerId); } catch (x) {}
+    bar.classList.add('drag');
+    seekTo(t, true);
+    render();
+    e.preventDefault();
+  });
+  bar.addEventListener('pointermove', function (e) {
+    if (!dragging) return;
+    var t = timeAt(e.clientX);
+    if (t === null) return;
+    dragT = t;
+    seekTo(t, false);
+    renderBar(true);
+  });
+  function endDrag(e, cancel) {
+    if (!dragging) return;
+    var t = cancel ? dragT : timeAt(e.clientX);
+    if (t === null) t = dragT;
+    var w = barWindow();
+    dragging = false;
+    bar.classList.remove('drag');
+    seekTo(t, true);
+    if (dragWasPlaying) { if (w && t >= w[1] - 3) goLive(); else startPlayback(); }
+    reveal();
+  }
+  bar.addEventListener('pointerup', function (e) { endDrag(e, false); });
+  bar.addEventListener('pointercancel', function (e) { endDrag(e, true); });
+  bar.addEventListener('touchstart', function (e) { e.stopPropagation(); }, { passive: true });
+  ['timeupdate', 'progress', 'seeked'].forEach(function (t) {
+    video.addEventListener(t, function () { if (!dragging) render(); });
+  });
 
   // New channel / teardown: forget any pause.
   video.addEventListener('emptied', function () { userPaused = false; render(); });
@@ -640,7 +774,7 @@
     if (e.key === ' ' || e.code === 'Space') {
       if (tag === 'BUTTON') return;
       toggle(); e.preventDefault();
-    } else if (e.key === 'ArrowLeft') { skip(-SKIP); e.preventDefault(); }
+    } else if (e.key === 'ArrowLeft') { if (e.shiftKey) skipBack(30); else skip(-SKIP); e.preventDefault(); }
     else if (e.key === 'ArrowRight') { if (e.shiftKey) skipAhead(30); else skip(SKIP); e.preventDefault(); }
     else if (e.key === 's' || e.key === 'S') { skipAhead(30); e.preventDefault(); }
     else if (e.key === 'l' || e.key === 'L' || e.key === 'End') { goLive(); e.preventDefault(); }
@@ -650,5 +784,5 @@
   tick = setInterval(render, 500);
   render();
   window.tvTimeshift = { pause: pause, resume: resume, goLive: goLive, skip: skip, skipAhead: skipAhead, toggle: toggle };
-  window.tvSkip = function (sec) { skipAhead(sec || 30); };
+  window.tvSkip = function (sec) { if (sec < 0) skipBack(-sec); else skipAhead(sec || 30); };
 })();
