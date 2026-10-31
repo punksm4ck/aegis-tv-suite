@@ -51,17 +51,18 @@ MONO = "Menlo" if sys.platform == "darwin" else "Consolas"
 DEFAULT_M3U = "https://iptv-org.github.io/iptv/countries/us.m3u"
 
 PX_MIN, ROW_H, NAME_W, HEAD_H, SLOT, HOURS = 4, 34, 200, 28, 30, 72
-BG, PANEL, GRID, CELL, AIR, EMPTY = "#0a0d08", "#11160e", "#2a3722", "#162012", "#3f6020", "#0d110a"
-FG, DIM, ACCENT, RED = "#c8d8b0", "#6f8060", "#ffb000", "#ff3b3b"
+# WEB THEME: palette from the web player
+BG, PANEL, GRID, CELL, AIR, EMPTY = "#000000", "#16171b", "#2b2d34", "#1b1d24", "#262a3a", "#0e0f12"
+FG, DIM, ACCENT, RED = "#e8e8ea", "#8a8d98", "#6d8cff", "#ff3b3b"
 
 QSS = f"""
 * {{ color: {FG}; }}
 QMainWindow, QWidget {{ background: {BG}; }}
-QLineEdit, QComboBox, QTreeWidget {{ background: {PANEL}; border: 1px solid {GRID};
+QLineEdit, QComboBox, QTreeWidget {{ background: {PANEL}; border: 1px solid {GRID}; border-radius: 8px;
     selection-background-color: {AIR}; selection-color: {FG}; padding: 3px; }}
 QComboBox QAbstractItemView {{ background: {PANEL}; selection-background-color: {AIR}; }}
-QPushButton {{ background: {PANEL}; border: 1px solid {GRID}; padding: 4px 10px; color: {ACCENT}; }}
-QPushButton:hover {{ border-color: {ACCENT}; }}
+QPushButton {{ background: {PANEL}; border: 1px solid {GRID}; border-radius: 8px; padding: 6px 12px; color: {FG}; }}
+QPushButton:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}
 QPushButton:pressed {{ background: {AIR}; }}
 QPushButton:disabled {{ color: {DIM}; }}
 QHeaderView::section {{ background: {PANEL}; color: {ACCENT}; border: 0;
@@ -207,6 +208,40 @@ def load_last():
         return d if isinstance(d, dict) and d.get("name") else None
     except (OSError, ValueError):
         return None
+
+
+GUIDE_ORDER = ["kids", "comedy", "other", "entertainment", "movies", "series",
+               "documentary", "sports", "news", "music"]
+RECENT_FILE = os.path.join(CACHE, "recent.json")
+
+
+def grp_rank(g):
+    k = (g or "Other").split(";")[0].strip().lower()
+    return GUIDE_ORDER.index(k) if k in GUIDE_ORDER else 999
+
+
+def load_recent():
+    import json
+    try:
+        with open(RECENT_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        return [k for k in d if isinstance(k, str)] if isinstance(d, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def push_recent(ch):
+    import json
+    try:
+        key = norm(ch.name)
+        keys = [k for k in load_recent() if k != key]
+        keys.insert(0, key)
+        os.makedirs(CACHE, mode=0o700, exist_ok=True)
+        with open(RECENT_FILE + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(keys[:15], f)
+        os.replace(RECENT_FILE + ".tmp", RECENT_FILE)
+    except OSError:
+        pass
 
 
 def clear_last():
@@ -518,7 +553,7 @@ class ChannelOverlay(QWidget):
         box = QFrame(self)
         box.setObjectName("ovlbox")
         self.q = QLineEdit()
-        self.q.setPlaceholderText("filter channels  (Esc closes)")
+        self.q.setPlaceholderText("recent channels - type to search all  (Esc closes)")
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setRootIsDecorated(False)
@@ -531,8 +566,8 @@ class ChannelOverlay(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(box)
         self.setStyleSheet(
-            "QFrame#ovlbox { background: rgba(10,13,8,215); border: 1px solid " + GRID + "; }"
-            "QTreeWidget, QLineEdit { background: rgba(17,22,14,170); border: 1px solid " + GRID
+            "QFrame#ovlbox { background: #16171b; border: 1px solid " + GRID + "; border-radius: 12px; }"
+            "QTreeWidget, QLineEdit { background: #0e0f12; border-radius: 8px; border: 1px solid " + GRID
             + "; color: " + FG + "; selection-background-color: " + AIR + "; }")
         self.q.textChanged.connect(lambda _t: self.fill())
         self.q.returnPressed.connect(self.pick_current)
@@ -550,12 +585,18 @@ class ChannelOverlay(QWidget):
     def fill(self):
         t = self.q.text().lower().strip()
         self.tree.clear()
-        for c in self.chans:
-            if t in c.name.lower():
-                p = now_prog(c)
-                it = QTreeWidgetItem([c.name, p["t"] if p else ""])
-                it.setData(0, Qt.ItemDataRole.UserRole, c)
-                self.tree.addTopLevelItem(it)
+        if t:
+            src = [c for c in self.chans if t in c.name.lower()]
+        else:
+            byk = {}
+            for c in self.chans:
+                byk.setdefault(norm(c.name), c)
+            src = [byk[k] for k in load_recent() if k in byk] or list(self.chans)
+        for c in src:
+            p = now_prog(c)
+            it = QTreeWidgetItem([c.name, p["t"] if p else ""])
+            it.setData(0, Qt.ItemDataRole.UserRole, c)
+            self.tree.addTopLevelItem(it)
 
     def pick_current(self):
         it = self.tree.currentItem() or self.tree.topLevelItem(0)
@@ -753,6 +794,8 @@ class Main(QMainWindow):
         self.tree.setColumnWidth(1, 90)
         self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.tree.itemActivated.connect(lambda it, _c: self.tune(it.data(0, Qt.ItemDataRole.UserRole)))
+        self.tree.header().setSectionsClickable(True)  # HDR SORT
+        self.tree.header().sectionClicked.connect(self._on_header_sort)
         self.info = QLabel("LOADING...")
         self.info.setObjectName("info")
         self.statusBar().addPermanentWidget(self.info)
@@ -975,6 +1018,7 @@ class Main(QMainWindow):
         keep = self.group.currentText()
         _lg = list(dict.fromkeys(c.group for c in self.lineup if c.group))
         groups = _lg + sorted({c.group for c in self.pool() if c.group} - set(_lg))
+        groups.sort(key=grp_rank)
         self.group.blockSignals(True)
         self.group.clear()
         self.group.addItems(["ALL"] + groups)
@@ -989,9 +1033,10 @@ class Main(QMainWindow):
     def apply_filter(self):
         q, g = self.search.text().lower().strip(), self.group.currentText()
         vis = [c for c in self.pool() if (g == "ALL" or c.group == g) and q in c.name.lower()]
+        vis.sort(key=lambda c: grp_rank(c.group))
         self.tree.setUpdatesEnabled(False)
         self.tree.clear()
-        for c in vis:
+        for c in self._sorted_vis(vis):
             p = now_prog(c)
             it = QTreeWidgetItem([c.name, c.group, p["t"] if p else ""])
             it.setData(0, Qt.ItemDataRole.UserRole, c)
@@ -1000,6 +1045,37 @@ class Main(QMainWindow):
             self.tree.addTopLevelItem(it)
         self.tree.setUpdatesEnabled(True)
         self.guide.rebuild([c for c in vis if c.in_lineup])
+
+    def _on_header_sort(self, col):
+        cur, asc = getattr(self, "_sort", (None, True))
+        if cur != col:
+            self._sort = (col, True)
+        elif asc:
+            self._sort = (col, False)
+        else:
+            self._sort = (None, True)
+        h = self.tree.header()
+        if self._sort[0] is None:
+            h.setSortIndicatorShown(False)
+        else:
+            h.setSortIndicatorShown(True)
+            h.setSortIndicator(col, Qt.SortOrder.AscendingOrder if self._sort[1] else Qt.SortOrder.DescendingOrder)
+        self.apply_filter()
+
+    def _sorted_vis(self, vis):
+        col, asc = getattr(self, "_sort", (None, True))
+        if col is None:
+            return vis
+        if col == 0:
+            return sorted(vis, key=lambda c: c.name.lower(), reverse=not asc)
+        if col == 1:
+            return sorted(vis, key=lambda c: ((c.group or "").lower(), c.name.lower()), reverse=not asc)
+        have, none = [], []
+        for c in vis:
+            p = now_prog(c)
+            (have if (p and p.get("t")) else none).append(c)
+        have.sort(key=lambda c: now_prog(c)["t"].lower(), reverse=not asc)
+        return have + none
 
     def tick(self):
         self.guide.update_now_line()
@@ -1022,6 +1098,7 @@ class Main(QMainWindow):
             return
         self.statusBar().showMessage(f"Tuning {ch.name}...", 4000)
         save_last(ch)
+        push_recent(ch)
         self.player.play(ch.url, label)
 
     def resume_last(self):
@@ -1080,16 +1157,20 @@ class Main(QMainWindow):
         except Exception:
             pass
 
-    def toggle_overlay(self):
-        if not self.isFullScreen():
-            return
+    def toggle_overlay(self):  # CTX MENU: works windowed and fullscreen
         if self.overlay.isVisible():
             self.overlay.hide()
             return
-        g = self.geometry()
-        w = max(360, int(g.width() * 0.36))
-        self.overlay.setGeometry(g.x() + g.width() - w, g.y(), w, g.height())
-        self.overlay.open_with(self.lineup)
+        if self.isFullScreen():
+            g = self.geometry()
+            x, y, gw, gh = g.x(), g.y(), g.width(), g.height()
+        else:
+            v = self.player.video
+            tl = v.mapToGlobal(v.rect().topLeft())
+            x, y, gw, gh = tl.x(), tl.y(), v.width(), max(v.height(), 380)
+        w = max(360, int(gw * 0.36))
+        self.overlay.setGeometry(x + gw - w, y, w, gh)
+        self.overlay.open_with(self.pool())
 
     def closeEvent(self, e):
         self.clock.stop()
@@ -1117,6 +1198,7 @@ def _hook(et, ev, tb):
 def main():
     sys.excepthook = _hook
     app = QApplication(sys.argv)
+    app.setFont(QFont("Segoe UI" if sys.platform.startswith("win") else ".AppleSystemUIFont", 13))
     app.setApplicationName("AEGIS TV-OPS")
     app.setFont(QFont(MONO, 11))
     app.setStyleSheet(QSS)
