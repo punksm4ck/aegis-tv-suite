@@ -623,6 +623,7 @@ class Player(QWidget):
         self.ok = False
         self.live_url, self.live_label, self._paused_at = '', '', 0.0
         self.ts_active, self._ts_uri, self._ts_path = False, '', ''
+        self._ts_note = ''
         self._ts_rec, self._ts_inst, self._ts_t0 = None, None, 0.0
         try:
             import glob, tempfile
@@ -653,6 +654,9 @@ class Player(QWidget):
         bar.setContentsMargins(6, 4, 6, 4)
         for w in (self.btn_pause, self.btn_live, self.btn_mute, self.vol, self.btn_full, self.btn_pop):
             bar.addWidget(w)
+        self.ts_stat = QLabel('')
+        self.ts_stat.setStyleSheet('color: #8a90a8; padding-left: 12px;')
+        bar.addWidget(self.ts_stat)
         bar.addStretch()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -661,7 +665,7 @@ class Player(QWidget):
         lay.addWidget(self.video, 1)
         lay.addLayout(bar)
         self.chrome = [self.info, self.btn_pause, self.btn_live, self.btn_mute,
-                       self.vol, self.btn_full, self.btn_pop]
+                       self.vol, self.btn_full, self.btn_pop, self.ts_stat]
         self.poll = QTimer(self)
         self.poll.setInterval(1000)
         self.poll.timeout.connect(self.check_state)
@@ -732,7 +736,8 @@ class Player(QWidget):
         tag = names.get(st, str(st))
         if self.ts_active:
             behind = max(0, int((time.time() - self._ts_t0) - self.mp.get_time() / 1000.0))
-            tag = "PAUSED (timeshift)" if st == vlc.State.Paused else "TIMESHIFT -%d:%02d" % (behind // 60, behind % 60)
+            _pd = int(time.time() - self._paused_at)
+            tag = ("PAUSED %d:%02d (timeshift)" % (_pd // 60, _pd % 60)) if st == vlc.State.Paused else "TIMESHIFT -%d:%02d" % (behind // 60, behind % 60)
             if st in (vlc.State.Ended, vlc.State.Error):
                 self.go_live()
                 return
@@ -742,9 +747,17 @@ class Player(QWidget):
                 _rs = str(self._ts_rec.get_state()).split(".")[-1]
             except Exception:
                 _sz, _rs = 0, "?"
-            tag = "PAUSED (buffering live: %.1f MB, recorder %s)" % (_sz / 1e6, _rs)
-        if self._ts_rec is not None and time.time() - self._ts_t0 > self.TS_MAX_SEC:
-            self._ts_stop_rec()
+            _pd = int(time.time() - self._paused_at)
+            tag = "PAUSED %d:%02d" % (_pd // 60, _pd % 60) + ("" if _rs == "Playing" else " (recorder %s)" % _rs)
+        if self._ts_rec is not None:
+            _fr = self._ts_free()
+            if _fr < self.TS_MIN_FREE:
+                self._ts_stop_rec()
+                self._ts_note = 'disk space low'
+            elif time.time() - self._ts_t0 > self.TS_MAX_SEC:
+                self._ts_stop_rec()
+                self._ts_note = '1h cap'
+        self._ts_update_stat()
         self.info.setText(f"{tag}: {self.label}")
         self.btn_pause.setText("RESUME" if st == vlc.State.Paused else "PAUSE")
         if st in (vlc.State.Error, vlc.State.Ended, vlc.State.Stopped):
@@ -764,6 +777,55 @@ class Player(QWidget):
 
     TS_MIN_SEC = 3       # pauses shorter than this just un-pause the live stream
     TS_MAX_SEC = 3600    # stop writing the timeshift file after an hour
+    TS_MIN_FREE = 500 * 1024 * 1024   # stop buffering below this much free disk
+
+    def _ts_dir(self):
+        import tempfile
+        return os.path.dirname(self._ts_path) if self._ts_path else os.path.join(tempfile.gettempdir(), "aegis_timeshift")
+
+    def _ts_free(self):
+        import shutil
+        d = self._ts_dir()
+        while d and not os.path.exists(d):
+            nd = os.path.dirname(d)
+            if nd == d:
+                break
+            d = nd
+        try:
+            return shutil.disk_usage(d or ".").free
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _fmt_size(n):
+        return "%.1f GB" % (n / 1e9) if n >= 1e9 else "%.1f MB" % (n / 1e6)
+
+    @staticmethod
+    def _fmt_dur(sec):
+        sec = max(0, int(sec))
+        if sec >= 3600:
+            return "%d:%02d:%02d" % (sec // 3600, sec % 3600 // 60, sec % 60)
+        return "%d:%02d" % (sec // 60, sec % 60)
+
+    def _ts_update_stat(self):
+        free = self._ts_free()
+        txt, hot = "FREE " + self._fmt_size(free), free < 2 * 1024 ** 3
+        if self._ts_path:
+            buf = os.path.getsize(self._ts_path) if os.path.exists(self._ts_path) else 0
+            if self._ts_rec is not None:
+                el = max(1.0, time.time() - self._ts_t0)
+                rate = buf / el
+                by_disk = (free - self.TS_MIN_FREE) / rate if rate > 1000 else float("inf")
+                left = min(by_disk, self.TS_MAX_SEC - el)
+                txt = "BUF %s (%s)   %s   REC LEFT %s" % (self._fmt_size(buf), self._fmt_dur(el), txt, self._fmt_dur(left))
+                hot = hot or left < 120
+            else:
+                txt = "BUF %s   %s   REC STOPPED (%s)" % (self._fmt_size(buf), txt, self._ts_note or "ended")
+        try:
+            self.ts_stat.setText(txt)
+            self.ts_stat.setStyleSheet("color: %s; padding-left: 12px;" % ("#e11d48" if hot else "#8a90a8"))
+        except Exception:
+            pass
 
     def _ts_instance(self):
         if self._ts_inst is None:
@@ -800,6 +862,7 @@ class Player(QWidget):
     def _ts_reset(self):
         self._ts_stop_rec()
         self.ts_active, self._ts_uri = False, ""
+        self._ts_note = ""
         path, self._ts_path = self._ts_path, ""
         if path:
             try:
@@ -852,6 +915,7 @@ class Player(QWidget):
     def stop(self):
         self._ts_reset()
         self.poll.stop()
+        self.ts_stat.setText('')
         if self.ok:
             self.mp.stop()
         self.info.setText("STANDBY")
