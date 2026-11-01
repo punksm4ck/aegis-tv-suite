@@ -899,9 +899,10 @@
   document.addEventListener('keydown', function (e) {
     if (modalOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
     var tag = e.target && e.target.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    var isRange = tag === 'INPUT' && e.target.type === 'range';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') { if (!(isRange && (e.key === ' ' || e.code === 'Space'))) return; }
     if (e.key === ' ' || e.code === 'Space') {
-      if (tag === 'BUTTON') return;
+      if (tag === 'BUTTON' || isRange) { try { e.target.blur(); } catch (_) {} }
       toggle(); e.preventDefault();
     } else if (e.key === 'ArrowLeft') { if (e.shiftKey) skipBack(30); else skip(-SKIP); e.preventDefault(); }
     else if (e.key === 'ArrowRight') { if (e.shiftKey) skipAhead(30); else skip(SKIP); e.preventDefault(); }
