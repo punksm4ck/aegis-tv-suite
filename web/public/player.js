@@ -485,7 +485,7 @@
     else if ((e.key === 'b' || e.key === 'B') && videoOnTop()) { starCurrent(); e.preventDefault(); }
     else if ((e.key === 'p' || e.key === 'P') && videoOnTop()) { togglePiP(); e.preventDefault(); }
     else if ((e.key === 'c' || e.key === 'C') && videoOnTop()) { if (window.tvOpenPicker) window.tvOpenPicker(); e.preventDefault(); }
-    else if (e.key === '?' && videoOnTop()) { if (window.tvSay) window.tvSay('M mute · F fullscreen · Space pause · S +30s · L live · B star · P pip · C channels · G guide'); e.preventDefault(); }
+    else if (e.key === '?' && videoOnTop()) { if (window.tvSay) window.tvSay('M mute · F fullscreen · Space pause · S +1:00 · L live · B star · P pip · C channels · G guide'); e.preventDefault(); }
   });
   video.addEventListener('dblclick', toggleFullscreen);
 
@@ -579,7 +579,7 @@
   var LIVE_TOL = 8;         // playing within this many seconds of live counts as LIVE (live sync jitters by about a segment)
   var SLACK = 10;           // buffer may trail the live edge by this much and still resume seamlessly
   var userPaused = false, pausedAt = 0, lastEnd = 0, lastGrowth = 0;
-  var activeUntil = 0, tick = null;
+  var activeUntil = 0, tick = null, tsHover = false, SKIP_FWD = 60;
 
   // Other overlays (volume, gestures, tuning) call video.play(); while the viewer has
   // paused on purpose those calls must not silently un-pause the picture.
@@ -667,8 +667,8 @@
   liveBtn.type = 'button'; liveBtn.className = 'live'; liveBtn.textContent = 'GO LIVE';
   liveBtn.setAttribute('aria-label', 'Go live');
   var skipBtn = document.createElement('button');
-  skipBtn.type = 'button'; skipBtn.className = 'skip'; skipBtn.textContent = '+30s';
-  skipBtn.setAttribute('aria-label', 'Skip ahead 30 seconds');
+  skipBtn.type = 'button'; skipBtn.className = 'skip'; skipBtn.textContent = '+1:00';
+  skipBtn.setAttribute('aria-label', 'Skip ahead 1 minute');
   var backBtn = document.createElement('button');
   backBtn.type = 'button'; backBtn.className = 'back'; backBtn.textContent = '-30s';
   backBtn.setAttribute('aria-label', 'Rewind 30 seconds');
@@ -712,7 +712,7 @@
     skipBtn.classList.toggle('dim', atLive);
     box.classList.toggle('paused', userPaused);
     box.classList.toggle('behind', !userPaused && behind > 4);
-    var showIt = userPaused || behind > 4 || Date.now() < activeUntil || dragging;
+    var showIt = Date.now() < activeUntil || dragging || tsHover;
     box.classList.toggle('show', showIt);
     renderBar(showIt);
   }
@@ -789,7 +789,7 @@
   }
 
   ppBtn.addEventListener('click', toggle);
-  skipBtn.addEventListener('click', function () { skipAhead(30); });
+  skipBtn.addEventListener('click', function () { skipAhead(SKIP_FWD); });
   liveBtn.addEventListener('click', goLive);
   backBtn.addEventListener('click', function () { skipBack(30); });
 
@@ -935,12 +935,16 @@
       if (tag === 'BUTTON' || isRange) { try { e.target.blur(); } catch (_) {} }
       toggle(); e.preventDefault();
     } else if (e.key === 'ArrowLeft') { if (e.shiftKey) skipBack(30); else skip(-SKIP); e.preventDefault(); }
-    else if (e.key === 'ArrowRight') { if (e.shiftKey) skipAhead(30); else skip(SKIP); e.preventDefault(); }
-    else if (e.key === 's' || e.key === 'S') { skipAhead(30); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { if (e.shiftKey) skipAhead(SKIP_FWD); else skip(SKIP); e.preventDefault(); }
+    else if (e.key === 's' || e.key === 'S') { skipAhead(SKIP_FWD); e.preventDefault(); }
     else if (e.key === 'l' || e.key === 'L' || e.key === 'End') { goLive(); e.preventDefault(); }
   });
   ['mousemove', 'touchstart'].forEach(function (t) { document.addEventListener(t, reveal, { passive: true }); });
 
+  [box, bar].forEach(function (el) {
+    el.addEventListener('mouseenter', function () { tsHover = true; render(); });
+    el.addEventListener('mouseleave', function () { tsHover = false; activeUntil = Date.now() + 1500; render(); });
+  });
   tick = setInterval(render, 500);
   render();
   window.tvTimeshift = { pause: pause, resume: resume, goLive: goLive, skip: skip, skipAhead: skipAhead, toggle: toggle };
