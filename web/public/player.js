@@ -288,6 +288,7 @@
   window.tvSay = say;
   window.tvOpenPicker = function () { openPicker(Math.max(12, window.innerWidth / 2 - 190), 80); };
   window.tvHls = function () { return hls; };
+  window.tvPlay = function (ch) { return play(ch); };
   // ---- boot ----
   fetch('/api/channels?all=1', { credentials: 'same-origin' })
     .then(function (r) {
@@ -695,8 +696,8 @@
         var left = r[1] - lt + SLACK;
         label += left > 0 ? '   LEFT ' + fmt(left) : '   BUFFER FULL - RESUME JUMPS TO LIVE';
       }
-    } else if (behind > 4) {
-      label = 'BEHIND LIVE -' + fmt(behind) + '   BUF ' + fmt(ahead);
+    } else if (behind > 4 || inHist()) {
+      label = (inHist() ? 'HISTORY -' : 'BEHIND LIVE -') + fmt(behind) + '   BUF ' + fmt(ahead);
     } else {
       label = 'LIVE';
     }
@@ -707,7 +708,7 @@
       ppBtn.innerHTML = userPaused ? ICON_PLAY : ICON_PAUSE;
       ppBtn.setAttribute('aria-label', userPaused ? 'Resume' : 'Pause');
     }
-    var atLive = !userPaused && behind <= 4;
+    var atLive = !userPaused && behind <= 4 && !inHist();
     liveBtn.classList.toggle('dim', atLive);
     skipBtn.classList.toggle('dim', atLive);
     box.classList.toggle('paused', userPaused);
@@ -720,6 +721,7 @@
 
   // ---- actions ----
   function goLive() {
+    if (inHist()) { exitHistory(); return; }
     var t = liveTarget();
     userPaused = false;
     if (isFinite(t)) {
@@ -941,6 +943,39 @@
   });
   ['mousemove', 'touchstart'].forEach(function (t) { document.addEventListener(t, reveal, { passive: true }); });
 
+  // ---- watch history: rewind up to 15 min on this channel from the server-side ring ----
+  function inHist() {
+    var h = window.tvHls && window.tvHls();
+    return !!(h && /\/h\/[\w-]+\/index\.m3u8/.test(h.url || ''));
+  }
+  function exitHistory() {
+    var ch = window.tvCurrentChan && window.tvCurrentChan();
+    if (ch && window.tvPlay) window.tvPlay(ch); else note('Reload the page to return to live.');
+  }
+  var histBtn = document.createElement('button');
+  histBtn.type = 'button'; histBtn.className = 'hist'; histBtn.textContent = 'HISTORY';
+  histBtn.setAttribute('aria-label', 'Rewind through up to 15 minutes of recorded history');
+  box.insertBefore(histBtn, backBtn);
+  css.textContent += '#ts .hist{font-weight:700;letter-spacing:.04em;color:#ffd166}';
+  function enterHistory() {
+    var id = window.tvCurrent && window.tvCurrent();
+    var h = window.tvHls && window.tvHls();
+    if (!id || !h) return;
+    if (inHist()) { note('Already in history. GO LIVE returns.'); reveal(); return; }
+    fetch('/api/history', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        var c = d && d.channels && d.channels.filter(function (x) { return x.id === id; })[0];
+        if (!c || c.seconds < 20) { note('No history recorded for this channel yet.'); reveal(); return; }
+        userPaused = false;
+        h.config.startPosition = 0;
+        h.loadSource('/h/' + id + '/index.m3u8');
+        note('History: ' + fmt(c.seconds) + ' recorded. GO LIVE returns.');
+        reveal();
+      })
+      .catch(function () { note('History unavailable.'); reveal(); });
+  }
+  histBtn.addEventListener('click', enterHistory);
   [box, bar].forEach(function (el) {
     el.addEventListener('mouseenter', function () { tsHover = true; render(); });
     el.addEventListener('mouseleave', function () { tsHover = false; activeUntil = Date.now() + 1500; render(); });
