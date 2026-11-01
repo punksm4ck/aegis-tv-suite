@@ -1,3 +1,4 @@
+window.tvStarEl = function (c, cb) { var s = document.createElement('span'); var on = !!(window.tvIsStar && window.tvIsStar(c)); s.className = 'gstar' + (on ? ' on' : ''); s.textContent = on ? '★' : '☆'; s.title = on ? 'Unstar' : 'Star'; s.onmousedown = function (e) { e.stopPropagation(); }; s.onclick = function (e) { e.preventDefault(); e.stopPropagation(); if (window.tvToggleStar) window.tvToggleStar(c); if (cb) cb(); }; return s; };
 // Guide category order. Edit this list to reorder; unlisted categories go last.
 var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Series', 'Documentary', 'Sports', 'News', 'Music'];
 (() => {
@@ -72,7 +73,7 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
           if (!header) { header = mk('div', 'g-grp', g); grid.append(header); }
           const row = mk('div', 'g-row' + (c.id === cur ? ' cur' : '')), lab = mk('div', 'g-lab'), trk = mk('div', 'g-trk');
           const starOn = !!(window.tvIsStar && window.tvIsStar(c));
-          lab.append(mk('i', '', c.chno || c.number || c.num || (idx + 1)), mk('span', '', (starOn ? '★ ' : '') + c.name));
+          lab.append(mk('i', '', c.chno || c.number || c.num || (idx + 1)), (function () { const n = mk('span', '', ''); n.append(window.tvStarEl(c, function () { render(); }), document.createTextNode(c.name)); return n; })());
           lab.title = 'Right-click to ' + (starOn ? 'unstar' : 'star');
           lab.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); if (window.tvToggleStar) window.tvToggleStar(c); render(); };
           lab.onclick = () => tune(c);
@@ -370,7 +371,7 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
           const p = curProg(c);
           const r = mk('div', 'ops-lr'); r.dataset.id = c.id;
           const starOn = !!(window.tvIsStar && window.tvIsStar(c));
-          r.append(mk('span', 'n', (starOn ? '★ ' : '') + c.name), mk('span', 'g', g), mk('span', 'w', p ? p.t : ''));
+          r.append((function () { const n = mk('span', 'n', ''); n.append(window.tvStarEl(c, function () { delete loadedG['__starred__']; rerender(); }), document.createTextNode(c.name)); return n; })(), mk('span', 'g', g), mk('span', 'w', p ? p.t : ''));
           r.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); if (window.tvToggleStar) window.tvToggleStar(c); delete loadedG['__starred__']; rerender(); };
           r.title = c.name + (p ? '\n' + p.t : '');
           r.onclick = () => tune(c);
@@ -403,7 +404,7 @@ var TV_GUIDE_ORDER = ['Kids', 'Comedy', 'Other', 'Entertainment', 'Movies', 'Ser
           const row = mk('div', 'ops-row'), lab = mk('div', 'ops-lab'), trk = mk('div', 'ops-trk');
           row.dataset.id = c.id;
           const starOn = !!(window.tvIsStar && window.tvIsStar(c));
-          lab.append(mk('i', '', String(idx + 1)), mk('span', '', (starOn ? '★ ' : '') + c.name));
+          lab.append(mk('i', '', String(idx + 1)), (function () { const n = mk('span', '', ''); n.append(window.tvStarEl(c, function () { delete loadedG['__starred__']; rerender(); }), document.createTextNode(c.name)); return n; })());
           lab.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); if (window.tvToggleStar) window.tvToggleStar(c); delete loadedG['__starred__']; rerender(); };
           lab.onclick = () => tune(c);
           progsOf(c).filter(p => p.e > t0 && p.s < t1).forEach(p => {
