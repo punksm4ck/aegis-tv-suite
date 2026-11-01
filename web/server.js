@@ -314,6 +314,7 @@ app.post('/api/register', signupLimiter, jsonOnly, async (req, res) => {
 app.post('/api/logout', (req, res) => { res.clearCookie(COOKIE_NAME, { path: '/' }); res.json({ ok: true }); });
 
 let dvr; // assigned below, before listen
+let hist = null;
 // everything below needs a session
 app.get('/video-click.js', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'video-click.js')));
 app.get('/', requireAuth, (req, res) => {
@@ -380,6 +381,7 @@ app.get('/api/channels', requireAuth, (req, res) => {
 app.get('/s/:id', requireAuth, async (req, res) => {
   const ch = getPlaylist().byId.get(req.params.id);
   if (!ch) return res.status(404).type('text/plain').send('no such channel');
+  if (hist) { try { hist.touch(ch); } catch (_) {} }
   await relay(ch.url, req, res, true, { ref: ch.ref, ua: ch.ua });
 });
 // Signed relay for variant playlists, segments, keys.
@@ -391,6 +393,7 @@ app.get('/p/:token', requireAuth, async (req, res) => {
 
 // ---------- DVR (admin only) ----------
 dvr = require('./dvr').mount(app, { requireAuth, jsonOnly, getPlaylist, dataDir: DATA_DIR, publicDir: PUBLIC_DIR });
+hist = require('./history').mount(app, { requireAuth, getPlaylist, dataDir: DATA_DIR });
 
 // ---------- guide (EPG) ----------
 const GUIDE_PATH = path.join(ROOT, 'guide.json');
