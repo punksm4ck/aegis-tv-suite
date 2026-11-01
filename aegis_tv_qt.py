@@ -299,6 +299,7 @@ SYNC_FILE = os.path.join(CACHE, "sync.json")
 _sync_lock = _threading.Lock()
 _sync_pending = None
 _sync_running = False
+_sync_gen = 0
 
 
 def _sync_cfg():
@@ -342,10 +343,11 @@ def _sync_worker():
 
 
 def _sync_push(keys):
-    global _sync_pending, _sync_running
+    global _sync_pending, _sync_running, _sync_gen
     if not _sync_cfg():
         return
     with _sync_lock:
+        _sync_gen += 1
         _sync_pending = list(keys)
         if _sync_running:
             return
@@ -359,6 +361,7 @@ def _sync_apply(keys):
 
 
 def _sync_pull():
+    gen0 = _sync_gen
     try:
         d = _sync_req("GET")
     except Exception:
@@ -366,7 +369,7 @@ def _sync_pull():
     if not isinstance(d, dict):
         return
     with _sync_lock:
-        if _sync_running or _sync_pending is not None:
+        if _sync_running or _sync_pending is not None or _sync_gen != gen0:
             return  # a local change is in flight; don't overwrite it
     keys = {k for k in (d.get("keys") or []) if isinstance(k, str)}
     done = SYNC_FILE + ".done"
@@ -389,7 +392,14 @@ def _sync_pull():
         _sync_apply(keys)
 
 
-_threading.Thread(target=_sync_pull, daemon=True).start()
+def _sync_loop():
+    _sync_pull()
+    while True:
+        time.sleep(60)
+        _sync_pull()
+
+
+_threading.Thread(target=_sync_loop, daemon=True).start()
 
 
 def is_fav(ch):
