@@ -326,6 +326,51 @@ app.get('/', requireAuth, (req, res) => {
 });
 app.get('/player.js', requireAuth, (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'player.js')));
 
+// ---- star sync (per user; browser cookie or X-Sync-Token) ----
+const nodeCrypto = require('crypto');
+const STARS_FILE = path.join(DATA_DIR, 'stars.json');
+const TOKENS_FILE = path.join(DATA_DIR, 'sync_tokens.json');
+const readJ = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { return {}; } };
+const writeJ = (f, obj) => { const tmp = f + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 }); fs.renameSync(tmp, f); };
+function starsUser(req) {
+  const u = currentUser(req);
+  if (u) return u;
+  const t = String(req.headers['x-sync-token'] || '');
+  if (t.length < 32) return null;
+  const users = readUsers();
+  for (const [tok, user] of Object.entries(readJ(TOKENS_FILE))) {
+    if (tok.length === t.length && nodeCrypto.timingSafeEqual(Buffer.from(tok), Buffer.from(t)) && users[user]) return user;
+  }
+  return null;
+}
+app.post('/api/sync-token', jsonOnly, (req, res) => {
+  const u = currentUser(req);
+  if (!u) return res.status(401).json({ error: 'log in first' });
+  const map = readJ(TOKENS_FILE);
+  for (const k of Object.keys(map)) if (map[k] === u) delete map[k];
+  const tok = nodeCrypto.randomBytes(24).toString('hex');
+  map[tok] = u;
+  writeJ(TOKENS_FILE, map);
+  res.json({ token: tok });
+});
+app.get('/api/stars', (req, res) => {
+  const u = starsUser(req);
+  if (!u) return res.status(401).json({ error: 'auth required' });
+  const rec = readJ(STARS_FILE)[u];
+  res.json(rec ? { exists: true, keys: rec.keys, updated: rec.updated } : { exists: false, keys: [] });
+});
+app.put('/api/stars', jsonOnly, (req, res) => {
+  const u = starsUser(req);
+  if (!u) return res.status(401).json({ error: 'auth required' });
+  const keys = req.body && req.body.keys;
+  if (!Array.isArray(keys) || keys.length > 500) return res.status(400).json({ error: 'bad keys' });
+  const clean = [...new Set(keys.filter((k) => typeof k === 'string' && k.length > 0 && k.length <= 60))].sort();
+  const all = readJ(STARS_FILE);
+  all[u] = { keys: clean, updated: Date.now() };
+  writeJ(STARS_FILE, all);
+  res.json({ ok: true, keys: clean, updated: all[u].updated });
+});
+
 app.get('/api/channels', requireAuth, (req, res) => {
   const { channels } = getPlaylist();
   res.set('Cache-Control', 'no-store');
