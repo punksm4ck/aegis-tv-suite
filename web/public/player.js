@@ -122,12 +122,42 @@
     if (!k) return false;
     var on = !m[k], keys = Object.keys(m);
     if (on) keys.push(k); else keys = keys.filter(function (x) { return x !== k; });
-    try { localStorage.setItem(STAR_KEY, JSON.stringify(keys)); } catch (e) {}
+    try { localStorage.setItem(STAR_KEY, JSON.stringify(keys)); } catch (e) {} pushStars(keys);
     try { window.dispatchEvent(new CustomEvent('tv-starred')); } catch (e) {}
     return on;
   }
   window.tvIsStar = isStar;
   window.tvToggleStar = toggleStar;
+
+  // ---- star sync with the server (server list is the source of truth after first sync) ----
+  var starPushT = null, starDirty = false;
+  function pushStars(keys) {
+    starDirty = true;
+    clearTimeout(starPushT);
+    starPushT = setTimeout(function () {
+      try {
+        fetch('/api/stars', { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keys: keys }) })
+          .then(function () { starDirty = false; }, function () { starDirty = false; });
+      } catch (e) { starDirty = false; }
+    }, 400);
+  }
+  function pullStars() {
+    if (starDirty) return;
+    fetch('/api/stars', { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || starDirty) return;
+        var cur = Object.keys(starSet());
+        if (!d.exists) { if (cur.length) pushStars(cur); return; }
+        var a1 = JSON.stringify(cur.slice().sort()), a2 = JSON.stringify((d.keys || []).slice().sort());
+        if (a1 === a2) return;
+        try { localStorage.setItem(STAR_KEY, JSON.stringify(d.keys || [])); } catch (e) {}
+        try { window.dispatchEvent(new CustomEvent('tv-starred')); } catch (e) {}
+      })
+      .catch(function () {});
+  }
+  pullStars();
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) pullStars(); });
 
   // ---- picker ----
   var RECENT_KEY = 'tv_recent_channels';
