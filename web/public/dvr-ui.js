@@ -14,6 +14,7 @@
       .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.status); return j; }); });
   }
   function el(t, s, txt) { var e = document.createElement(t); if (s) e.style.cssText = s; if (txt) e.textContent = txt; return e; }
+  var mmss = function (s) { s = Math.max(0, Math.round(s)); var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = s % 60; return (h ? h + ':' + (m < 10 ? '0' : '') : '') + m + ':' + (r < 10 ? '0' : '') + r; };
   var fmt = function (ts) { return new Date(ts * 1000).toLocaleString([], { weekday: 'short', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }); };
 
   function init() {
@@ -84,6 +85,7 @@
           var b = el('div', 'margin-top:4px');
           var mk = function (label, path) { var x = el('button', 'margin-right:6px;background:#2a2e35;color:#eee;border:0;border-radius:6px;padding:3px 8px;cursor:pointer', label);
             x.onclick = function () { if (path === '/api/dvr/delete' && !confirm('Delete this recording and its file?')) return; api(path, { id: j.id }).then(render).catch(function (e) { alert(e.message); }); }; b.appendChild(x); };
+          if (j.playable) { var pl = el('button', 'margin-right:6px;background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:3px 8px;cursor:pointer', j.watched ? 'Play again' : (j.pos > 10 ? 'Resume ' + mmss(j.pos) : 'Play')); pl.onclick = function () { window.open('/dvr/watch/' + j.id, '_blank'); }; b.appendChild(pl); }
           if (j.status === 'recording') mk('Stop', '/api/dvr/stop');
           else if (j.status === 'scheduled' || j.status === 'missed') mk('Cancel', '/api/dvr/stop');
           if (j.status !== 'scheduled' && j.status !== 'recording') mk('Delete', '/api/dvr/delete');
