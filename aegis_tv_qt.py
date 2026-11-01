@@ -291,6 +291,107 @@ _fv = _read_json(FAV_FILE, [])
 FAVS = {k for k in _fv if isinstance(k, str)} if isinstance(_fv, list) else set()
 
 
+# ---- star sync with the site (token in ~/.aegis_tv/sync.json; silent no-op without it) ----
+import json as _json
+import threading as _threading
+
+SYNC_FILE = os.path.join(CACHE, "sync.json")
+_sync_lock = _threading.Lock()
+_sync_pending = None
+_sync_running = False
+
+
+def _sync_cfg():
+    d = _read_json(SYNC_FILE, {})
+    if not isinstance(d, dict):
+        return None
+    url = str(d.get("url", "")).rstrip("/")
+    tok = str(d.get("token", ""))
+    if not url.startswith("https://") or len(tok) < 32:
+        return None
+    return url, tok
+
+
+def _sync_req(method, keys=None):
+    cfg = _sync_cfg()
+    if not cfg:
+        return None
+    url, tok = cfg
+    data = _json.dumps({"keys": keys}).encode() if keys is not None else None
+    req = urllib.request.Request(url + "/api/stars", data=data, method=method)
+    req.add_header("X-Sync-Token", tok)
+    req.add_header("User-Agent", "aegis-tv-mac/1.0")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=8) as r:
+        return _json.loads(r.read().decode("utf-8"))
+
+
+def _sync_worker():
+    global _sync_pending, _sync_running
+    while True:
+        with _sync_lock:
+            keys, _sync_pending = _sync_pending, None
+            if keys is None:
+                _sync_running = False
+                return
+        try:
+            _sync_req("PUT", keys)
+        except Exception:
+            pass
+
+
+def _sync_push(keys):
+    global _sync_pending, _sync_running
+    if not _sync_cfg():
+        return
+    with _sync_lock:
+        _sync_pending = list(keys)
+        if _sync_running:
+            return
+        _sync_running = True
+    _threading.Thread(target=_sync_worker, daemon=True).start()
+
+
+def _sync_apply(keys):
+    FAVS.symmetric_difference_update(FAVS ^ keys)  # one C-level call, safe against UI iteration
+    _write_json(FAV_FILE, sorted(FAVS))
+
+
+def _sync_pull():
+    try:
+        d = _sync_req("GET")
+    except Exception:
+        return
+    if not isinstance(d, dict):
+        return
+    with _sync_lock:
+        if _sync_running or _sync_pending is not None:
+            return  # a local change is in flight; don't overwrite it
+    keys = {k for k in (d.get("keys") or []) if isinstance(k, str)}
+    done = SYNC_FILE + ".done"
+    if not os.path.exists(done):
+        merged = keys | FAVS  # first sync: union so nothing is lost on either side
+        if merged != FAVS:
+            _sync_apply(merged)
+        if merged != keys:
+            _sync_push(sorted(merged))
+        try:
+            open(done, "w").close()
+        except OSError:
+            pass
+        return
+    if not d.get("exists"):
+        if FAVS:
+            _sync_push(sorted(FAVS))
+        return
+    if keys != FAVS:
+        _sync_apply(keys)
+
+
+_threading.Thread(target=_sync_pull, daemon=True).start()
+
+
 def is_fav(ch):
     return norm(ch.name) in FAVS
 
@@ -305,6 +406,7 @@ def toggle_fav(ch):
     else:
         FAVS.add(k)
     _write_json(FAV_FILE, sorted(FAVS))
+    _sync_push(sorted(FAVS))
     return k in FAVS
 
 
