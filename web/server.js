@@ -226,7 +226,7 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      mediaSrc: ["'self'", 'blob:'],
+      mediaSrc: ["'self'", 'blob:', 'data:'],
       connectSrc: ["'self'"],
       imgSrc: ["'self'", 'data:'],
       workerSrc: ["'self'", 'blob:'],
