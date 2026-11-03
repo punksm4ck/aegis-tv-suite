@@ -729,7 +729,7 @@
   liveBtn.setAttribute('aria-label', 'Go live');
   var skipBtn = document.createElement('button');
   skipBtn.type = 'button'; skipBtn.className = 'skip'; skipBtn.textContent = '+30s';
-  skipBtn.setAttribute('aria-label', 'Skip ahead 1 minute');
+  skipBtn.setAttribute('aria-label', 'Skip ahead 30 seconds');
   var backBtn = document.createElement('button');
   backBtn.type = 'button'; backBtn.className = 'back'; backBtn.textContent = '-30s';
   backBtn.setAttribute('aria-label', 'Rewind 30 seconds');
