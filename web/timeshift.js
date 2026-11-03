@@ -210,7 +210,7 @@ module.exports = function createTimeshift(options) {
         rec.lastErr = String(e && e.message || e);
         const n = (rec.segFail.get(s.up) || 0) + 1;
         rec.segFail.set(s.up, n);
-        if (n >= 3) { rec.lastUp = s.up; rec.forceDisc = true; rec.segFail.delete(s.up); continue; }   // give up on this one
+        if (n >= 3 || rec.lastErr === 'HTTP 404') { rec.lastUp = s.up; rec.forceDisc = true; rec.segFail.delete(s.up); continue; }   // give up on this one
         throw e;
       }
     }
