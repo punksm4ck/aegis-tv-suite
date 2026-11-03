@@ -33,23 +33,29 @@
     video.load();
   }
 
+  var tsbActive = false, tsbBad = {};
+  function tsbSkip(id) { var t = tsbBad[id]; return !!t && Date.now() - t < 5 * 60 * 1000; }
+  window.tvTsb = function () { return tsbActive; };
   function play(ch) {
+    if (window.tvTsLeave) { try { window.tvTsLeave(); } catch (e) {} }
     currentId = ch.id;
     try { localStorage.setItem(LAST_KEY, ch.id); } catch (e) {}
     pushRecent(ch.id);
     teardown();
     say('Tuning ' + ch.name + '…', true);
-    var src = '/s/' + ch.id;
+    var useTsb = !!(window.Hls && Hls.isSupported()) && !tsbSkip(ch.id);
+    tsbActive = useTsb;
+    var src = useTsb ? '/tsb/' + ch.id + '/live.m3u8' : '/s/' + ch.id;
 
     if (window.Hls && Hls.isSupported()) {
       hls = new Hls({
         lowLatencyMode: false,
-        maxBufferLength: 600,
-        maxMaxBufferLength: 600,
-        maxBufferSize: 300 * 1000 * 1000,
-        backBufferLength: 600,
-        liveBackBufferLength: 600,
-        manifestLoadingMaxRetry: 2,
+        maxBufferLength: useTsb ? 60 : 600,
+        maxMaxBufferLength: useTsb ? 90 : 600,
+        maxBufferSize: (useTsb ? 120 : 300) * 1000 * 1000,
+        backBufferLength: useTsb ? 120 : 600,
+        liveBackBufferLength: useTsb ? 120 : 600,
+        manifestLoadingMaxRetry: useTsb ? 0 : 2,
         levelLoadingMaxRetry: 3,
         fragLoadingMaxRetry: 4,
         xhrSetup: function (xhr) { xhr.withCredentials = true; }
@@ -60,10 +66,14 @@
         if (p && p.catch) p.catch(function () {});
       });
       hls.on(Hls.Events.FRAG_BUFFERED, function () { if (currentId === ch.id) hideSay(); });
+      if (useTsb) hls.once(Hls.Events.LEVEL_LOADED, function (_e, data) { if (window.tvTsArrive) window.tvTsArrive(ch.id, data && data.details); });
       hls.on(Hls.Events.ERROR, function (_e, d) {
         if (d.fatal || /buffer|append|quota|parsing|discontinuity/i.test(d.details || '')) console.warn('[tv] hls', d.fatal ? 'FATAL' : 'warn', d.type, d.details);
         if (!d.fatal) return;
         if (d.response && d.response.code === 401) { location.href = '/login'; return; }
+        if (useTsb && d.type === Hls.ErrorTypes.NETWORK_ERROR && /manifestLoad|levelLoad/.test(d.details || '')) {
+          tsbBad[ch.id] = Date.now(); console.warn('[tv] server buffer unavailable (' + d.details + '), using the direct stream'); play(ch); return;
+        }
         if (d.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 3) {
           mediaRecoveries++; hls.recoverMediaError(); return;
         }
@@ -524,6 +534,10 @@
     "#punks-nav a:hover{color:#d6dae3;background:#141821}",
     "#punks-nav a:focus-visible{outline:2px solid #4da3ff;outline-offset:-2px}",
     "#punks-nav a.pn-active{color:#4da3ff;background:#12161f;border-bottom-color:#4da3ff}",
+    AUTOHIDE ? (":root{--pn-h:" + (NAV_H + 1) + "px}@media (max-width:640px){:root{--pn-h:" + (NAV_H_SM + 1) + "px}}" +
+      "#g-ov,#ops-ov,#picker,video:not([style*='z-index']){transition:top .22s ease,height .22s ease}" +
+      "html.pn-open #g-ov,html.pn-open #ops-ov,html.pn-open #picker{position:fixed!important;top:var(--pn-h)!important;right:0!important;bottom:0!important;left:0!important;height:auto!important;min-height:0!important;max-height:none!important}" +
+      "html.pn-open video:not([style*='z-index']){top:var(--pn-h)!important;height:calc(100% - var(--pn-h))!important}") : "",
     AUTOHIDE
       ? "#punks-nav{transform:translateY(-110%);transition:transform .22s ease}#punks-nav.pn-show{transform:translateY(0)}"
       : "body{padding-top:" + NAV_H + "px!important}",
@@ -545,10 +559,10 @@
     if (!AUTOHIDE) return;
 
     var hideTimer = null, hovering = false;
-    function show() { nav.classList.add('pn-show'); clearTimeout(hideTimer); }
+    function show() { nav.classList.add('pn-show'); document.documentElement.classList.add('pn-open'); clearTimeout(hideTimer); }
     function hideSoon(ms) {
       clearTimeout(hideTimer);
-      hideTimer = setTimeout(function () { if (!hovering && !nav.contains(document.activeElement)) nav.classList.remove('pn-show'); }, ms || 1200);
+      hideTimer = setTimeout(function () { if (!hovering && !nav.contains(document.activeElement)) { nav.classList.remove('pn-show'); document.documentElement.classList.remove('pn-open'); } }, ms || 1200);
     }
     nav.addEventListener('mouseenter', function () { hovering = true; show(); });
     nav.addEventListener('mouseleave', function () { hovering = false; hideSoon(900); });
@@ -596,7 +610,8 @@
   }
   function fmt(s) {
     s = Math.max(0, Math.round(s));
-    var m = Math.floor(s / 60), r = s % 60;
+    var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = s % 60;
+    if (h) return h + ':' + (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
     return m + ':' + (r < 10 ? '0' : '') + r;
   }
   function seekEnd() {
@@ -618,6 +633,51 @@
   function modalOpen() {
     return (picker && picker.classList.contains('open')) || !!document.getElementById('g-ov');
   }
+
+  // ---- server-side buffer: hls.js plays /tsb/<id>/live.m3u8, so the whole recorded window is seekable ----
+  var tsbSaved = {};
+  function dvrFrags(details) {
+    if (details && details.fragments && details.fragments.length) return details.fragments;
+    var h = window.tvHls && window.tvHls();
+    if (!h || !(window.tvTsb && window.tvTsb())) return null;
+    var i = h.currentLevel >= 0 ? h.currentLevel : (h.loadLevel >= 0 ? h.loadLevel : 0);
+    var lv = h.levels && h.levels[i], d = lv && lv.details;
+    return d && d.fragments && d.fragments.length ? d.fragments : null;
+  }
+  function dvrWin() {   // [oldest, newest] in media time, or null when not playing from the server buffer
+    if (!(window.tvTsb && window.tvTsb())) return null;
+    var f = dvrFrags(), l = f && f[f.length - 1];
+    return f ? [f[0].start, l.start + l.duration] : null;
+  }
+  function fragAt(t) {
+    var f = dvrFrags();
+    if (!f) return null;
+    for (var i = f.length - 1; i >= 0; i--) if (t >= f[i].start - 0.05) return f[i];
+    return f[0];
+  }
+  // Leaving a channel while paused or rewound: remember the spot (last 5 channels).
+  window.tvTsLeave = function () {
+    var id = window.tvCurrent && window.tvCurrent();
+    if (!id || !dvrWin()) return;
+    var lt = liveTarget(), ct = video.currentTime || 0;
+    if (!userPaused && !(isFinite(lt) && lt - ct > 15)) { delete tsbSaved[id]; return; }   // was watching live: come back live
+    var fr = fragAt(ct);
+    if (!fr) return;
+    tsbSaved[id] = { sn: fr.sn, off: Math.max(0, ct - fr.start), paused: userPaused, at: Date.now() };
+    Object.keys(tsbSaved).sort(function (a, b) { return tsbSaved[b].at - tsbSaved[a].at; }).slice(5).forEach(function (k) { delete tsbSaved[k]; });
+  };
+  // Back on a channel: return to the saved spot if it is still inside the recorded window.
+  window.tvTsArrive = function (id, details) {
+    var s = tsbSaved[id]; delete tsbSaved[id];
+    if (!s) return;
+    var f = dvrFrags(details), fr = null;
+    if (f) for (var i = 0; i < f.length; i++) { if (f[i].sn === s.sn) { fr = f[i]; break; } }
+    if (!fr) { note('Your place on this channel aged out of the buffer. Playing live.'); return; }
+    try { video.currentTime = fr.start + s.off; } catch (e) {}
+    if (s.paused) { userPaused = true; pausedAt = Date.now(); lastEnd = 0; lastGrowth = Date.now(); try { video.pause(); } catch (e) {} }
+    note(s.paused ? 'Back where you paused.' : 'Back where you left off.');
+    reveal();
+  };
 
   // ---- UI ----
   var css = document.createElement('style');
@@ -701,6 +761,13 @@
     } else {
       label = 'LIVE';
     }
+    var dw = dvrWin();
+    if (dw) {
+      var back = Math.max(0, ct - dw[0]);
+      if (userPaused) label = 'PAUSED ' + fmt((Date.now() - pausedAt) / 1000) + '   BEHIND -' + fmt(behind) + '   REWIND ' + fmt(back);
+      else if (behind > 4) label = 'BEHIND LIVE -' + fmt(behind) + '   REWIND ' + fmt(back);
+      else label = 'LIVE   REWIND ' + fmt(back);
+    }
     if (txt.textContent !== label) txt.textContent = label;
     var ppKey = userPaused ? 'play' : 'pause';
     if (ppKey !== ppShown) {
@@ -724,6 +791,13 @@
     if (inHist()) { exitHistory(); return; }
     var t = liveTarget();
     userPaused = false;
+    if (isFinite(t) && dvrWin()) {
+      try { video.currentTime = t; } catch (e) {}
+      activeUntil = Date.now() + 6000;
+      startPlayback();
+      reveal();
+      return;
+    }
     if (isFinite(t)) {
       var before = bufSnapshot(), end = bufRange()[1];
       if (t > end - 1 && t - end <= GAP_OK) {
@@ -752,6 +826,15 @@
   }
   function resume() {
     if (!userPaused) return;
+    var dw = dvrWin();
+    if (dw) {
+      userPaused = false;
+      if ((video.currentTime || 0) < dw[0] + 1) {
+        note('Paused spot aged out of the buffer. Resumed from the oldest available.');
+        try { video.currentTime = dw[0] + 2; } catch (e) {}
+      }
+      startPlayback(); reveal(); return;
+    }
     var lt = liveTarget(), end = bufRange()[1];
     userPaused = false;
     if (isFinite(lt) && lt - end > SLACK) {
@@ -765,6 +848,12 @@
   function toggle() { if (userPaused) resume(); else pause(); }
   function skip(d) {
     if (video.readyState < 2) return;
+    var dw = dvrWin();
+    if (dw) {
+      var lt0 = liveTarget(), hi0 = isFinite(lt0) ? Math.max(lt0, dw[0] + 1) : dw[1];
+      try { video.currentTime = Math.min(Math.max((video.currentTime || 0) + d, dw[0] + 0.5), hi0); } catch (e) {}
+      reveal(); return;
+    }
     var r = bufRange();
     var hi = r[1] - 1;
     if (hi <= r[0]) return;
@@ -782,7 +871,7 @@
       goLive();
       return;
     }
-    var hi = bufRange()[1] - 1;
+    var hi = dvrWin() && isFinite(lt) ? lt : bufRange()[1] - 1;
     if (hi <= ct + 0.5) { note('Nothing buffered ahead yet.'); reveal(); return; }
     var t = Math.min(ct + sec, hi);
     try { video.currentTime = t; } catch (e) {}
@@ -818,7 +907,7 @@
   // Rewind by sec seconds, never before the start of what is buffered.
   function skipBack(sec) {
     if (video.readyState < 2) return;
-    var ct = video.currentTime, lo = bufRange()[0] + 0.1;
+    var ct = video.currentTime, dw = dvrWin(), lo = (dw ? dw[0] : bufRange()[0]) + 0.1;
     if (ct - lo <= 0.5) { note('At the start of the buffer.'); reveal(); return; }
     var t = Math.max(ct - sec, lo);
     try { video.currentTime = t; } catch (e) {}
@@ -838,6 +927,8 @@
 
   // Window shown on the bar: oldest buffered second .. live edge.
   function barWindow() {
+    var dw = dvrWin();
+    if (dw) { var lt0 = liveTarget(), e0 = isFinite(lt0) ? lt0 : dw[1]; return e0 - dw[0] > 2 ? [dw[0], e0] : null; }
     var b = video.buffered, n = b.length;
     if (!n) return null;
     var s = b.start(0), e = b.end(n - 1), lt = liveTarget();
@@ -845,6 +936,8 @@
     return e - s > 2 ? [s, e] : null;
   }
   function clampBuffered(t) {
+    var dw = dvrWin();
+    if (dw) { var hi0 = liveTarget(); return Math.max(dw[0] + 0.1, Math.min(t, isFinite(hi0) ? hi0 : dw[1])); }
     var b = video.buffered, best = t, bd = Infinity;
     for (var i = 0; i < b.length; i++) {
       var a = b.start(i) + 0.1, z = b.end(i) - 1;
@@ -870,6 +963,7 @@
     for (var i = 0; i < b.length; i++) {
       html += '<i style="left:' + (100 * (b.start(i) - s) / span) + '%;width:' + (100 * (b.end(i) - b.start(i)) / span) + '%"></i>';
     }
+    if (dvrWin()) html = '<i style="left:0;width:100%"></i>';   // whole window is on the server
     bufsEl.innerHTML = html;
     var t = dragging ? dragT : video.currentTime;
     if (!dragging && !userPaused && e - t <= LIVE_TOL) t = e;   // playing at live: pin to the right end
