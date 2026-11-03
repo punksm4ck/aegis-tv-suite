@@ -430,6 +430,11 @@ app.get('/api/guide', requireAuth, (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.json(out);
 });
+// ---------- long pause/rewind buffer (timeshift.js) ----------
+try {
+  const tsb = require('./timeshift')({ getUrl: (id) => { const c = getPlaylist().byId.get(id); return c ? c.url : null; } });
+  tsb.mount(app, requireAuth);
+} catch (e) { console.error('[tv] timeshift disabled:', e && e.message); }
 app.use((_req, res) => res.status(404).type('text/plain').send('not found'));
 app.use((err, _req, res, _next) => { console.error('[tv] error', err && err.message); res.status(500).type('text/plain').send('server error'); });
 
