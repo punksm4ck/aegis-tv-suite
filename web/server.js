@@ -1,3 +1,5 @@
+require('dns').setDefaultResultOrder('ipv4first');
+require('net').setDefaultAutoSelectFamilyAttemptTimeout?.(500);
 'use strict';
 // tv.punksm4ck.com - login-gated live TV player with a built-in HLS relay.
 // Env: PORT (4070), HOST (0.0.0.0), PLAYLIST_PATH (./playlist.m3u), JWT_SECRET,
