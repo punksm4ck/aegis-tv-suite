@@ -496,7 +496,7 @@
     else if ((e.key === 'b' || e.key === 'B') && videoOnTop()) { starCurrent(); e.preventDefault(); }
     else if ((e.key === 'p' || e.key === 'P') && videoOnTop()) { togglePiP(); e.preventDefault(); }
     else if ((e.key === 'c' || e.key === 'C') && videoOnTop()) { if (window.tvOpenPicker) window.tvOpenPicker(); e.preventDefault(); }
-    else if (e.key === '?' && videoOnTop()) { if (window.tvSay) window.tvSay('M mute · F fullscreen · Space pause · S +1:00 · L live · B star · P pip · C channels · G guide'); e.preventDefault(); }
+    else if (e.key === '?' && videoOnTop()) { if (window.tvSay) window.tvSay('M mute · F fullscreen · Space pause · S +30s · L live · B star · P pip · C channels · G guide'); e.preventDefault(); }
   });
   video.addEventListener('dblclick', toggleFullscreen);
 
@@ -594,7 +594,7 @@
   var LIVE_TOL = 8;         // playing within this many seconds of live counts as LIVE (live sync jitters by about a segment)
   var SLACK = 10;           // buffer may trail the live edge by this much and still resume seamlessly
   var userPaused = false, pausedAt = 0, lastEnd = 0, lastGrowth = 0;
-  var activeUntil = 0, tick = null, tsHover = false, SKIP_FWD = 60;
+  var activeUntil = 0, tick = null, tsHover = false, SKIP_FWD = 30;
 
   // Other overlays (volume, gestures, tuning) call video.play(); while the viewer has
   // paused on purpose those calls must not silently un-pause the picture.
@@ -728,7 +728,7 @@
   liveBtn.type = 'button'; liveBtn.className = 'live'; liveBtn.textContent = 'GO LIVE';
   liveBtn.setAttribute('aria-label', 'Go live');
   var skipBtn = document.createElement('button');
-  skipBtn.type = 'button'; skipBtn.className = 'skip'; skipBtn.textContent = '+1:00';
+  skipBtn.type = 'button'; skipBtn.className = 'skip'; skipBtn.textContent = '+30s';
   skipBtn.setAttribute('aria-label', 'Skip ahead 1 minute');
   var backBtn = document.createElement('button');
   backBtn.type = 'button'; backBtn.className = 'back'; backBtn.textContent = '-30s';
