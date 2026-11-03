@@ -89,14 +89,14 @@ module.exports = function createTimeshift(options) {
   async function getBuf(url, ms, max) {
     const ac = new AbortController(), t = setTimeout(() => ac.abort(), ms);
     try {
-      const r = await fetch(url, { headers: { 'User-Agent': o.userAgent, Accept: '*/*' }, signal: ac.signal, redirect: 'follow' }).catch((e) => { const c = e && e.cause; throw new Error(e.message + (c ? ' [' + (c.code || c.message) + ']' : '')); });
+      const r = await fetch(url, { headers: { 'User-Agent': o.userAgent, Accept: '*/*' }, signal: ac.signal, redirect: 'follow' }).catch((e) => { const c = e && e.cause; throw new Error((ac.signal.aborted ? 'timeout ' + ms + 'ms ' + (() => { try { return new URL(url).host; } catch (_) { return ''; } })() + ' ' : '') + e.message + (c ? ' [' + (c.code || c.message) + ']' : '')); });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const b = Buffer.from(await r.arrayBuffer());
       if (b.length > max) throw new Error('segment too large');
       return { buf: b, url: r.url || url };
     } finally { clearTimeout(t); }
   }
-  async function getText(url) { const r = await getBuf(url, 12000, 5e6); return { text: r.buf.toString('utf8'), url: r.url }; }
+  async function getText(url) { const r = await getBuf(url, 30000, 5e6); return { text: r.buf.toString('utf8'), url: r.url }; }
 
   // master -> media playlist URL. Returns { url } or { unsupported: reason }
   function pickMedia(text, url) {
