@@ -189,6 +189,36 @@
     });
     return out;
   }
+  // ---- what's on now (picker right column) ----
+  var nowCache = {};
+  function nowTitle(c) {
+    var e = nowCache[c.group], a = e && e.ch[c.id];
+    if (!a) return '';
+    var n = Math.floor(Date.now() / 1000);
+    for (var k = 0; k < a.length; k++) if (a[k].s <= n && a[k].e > n) return a[k].t || '';
+    return '';
+  }
+  function paintNow() {
+    for (var k = 0; k < list.children.length && k < shown.length; k++) {
+      var g = list.children[k].querySelector('.g');
+      if (g) g.textContent = nowTitle(shown[k]);
+    }
+  }
+  function loadNow() {
+    var seen = {}, need = [];
+    shown.slice(0, 40).forEach(function (c) {
+      if (seen[c.group]) return;
+      seen[c.group] = 1;
+      var e = nowCache[c.group];
+      if (!e || Date.now() - e.t > 60000) need.push(c.group);
+    });
+    need.slice(0, 8).forEach(function (gk) {
+      fetch('/api/guide?all=1&group=' + encodeURIComponent(gk), { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) { if (j) { nowCache[gk] = { t: Date.now(), ch: j.channels || {} }; paintNow(); } })
+        .catch(function () {});
+    });
+  }
   function renderList() {
     var term = q.value.trim().toLowerCase();
     if (!term) {
@@ -208,12 +238,13 @@
       if (c.id === currentId) li.className += ' cur';
       li.dataset.i = i;
       var n = document.createElement('span'); n.className = 'n'; n.textContent = (isStar(c) ? '★ ' : '') + c.name;
-      var g = document.createElement('span'); g.className = 'g'; g.textContent = c.group.split(';')[0];
+      var g = document.createElement('span'); g.className = 'g'; g.textContent = nowTitle(c);
       li.appendChild(n); li.appendChild(g);
       list.appendChild(li);
     });
     empty.textContent = term ? 'No matching channels' : 'Nothing watched yet. Search by name or use the Guide.';
     empty.style.display = shown.length ? 'none' : 'block';
+    loadNow();
   }
   function scrollSel() {
     var el = list.children[sel];
