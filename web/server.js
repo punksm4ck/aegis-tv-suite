@@ -517,6 +517,7 @@ app.get('/api/guide', requireAuth, (req, res) => {
 try {
   const tsb = require('./timeshift')({
     getUrl: (id) => { const c = getPlaylist().byId.get(id); return c ? c.url : null; },
+    getHeaders: (id) => { const c = getPlaylist().byId.get(id); return c && (c.ref || c.ua) ? { ref: c.ref, ua: c.ua } : null; },
     transform: async (url, buf) => { try { return tsHasDolby(buf) ? await aacFor(url, buf) : buf; } catch (e) { logUp(url, 'aac convert failed (timeshift): ' + ((e && e.message) || '')); return buf; } },
   });
   tsb.mount(app, requireAuth);

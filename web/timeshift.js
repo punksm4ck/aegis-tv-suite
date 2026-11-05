@@ -68,6 +68,7 @@ module.exports = function createTimeshift(options) {
   const o = Object.assign({
     dir: path.join(__dirname, 'data', 'tsbuf'),
     transform: null,                                      // optional async (url, buf) -> buf, applied to every saved segment
+    getHeaders: () => null,                               // channel id -> { ref, ua } sent upstream, like the relay does
     getUrl: () => null,                                   // channel id -> upstream playlist URL (master or media)
     enabled: process.env.TSB_DISABLE !== '1',
     maxChannels: Math.round(envNum('TSB_MAX_CH', 5)),
@@ -87,17 +88,18 @@ module.exports = function createTimeshift(options) {
   let lastTouch = 0, trash = [], started = false, sweeper = null;
 
   // ---------------------------------------------------------------- upstream I/O
-  async function getBuf(url, ms, max) {
+  const reqHeaders = (h) => { const r = { 'User-Agent': (h && h.ua) || o.userAgent, Accept: '*/*' }; if (h && h.ref) r.Referer = h.ref; return r; };
+  async function getBuf(url, ms, max, h) {
     const ac = new AbortController(), t = setTimeout(() => ac.abort(), ms);
     try {
-      const r = await fetch(url, { headers: { 'User-Agent': o.userAgent, Accept: '*/*' }, signal: ac.signal, redirect: 'follow' }).catch((e) => { const c = e && e.cause; throw new Error((ac.signal.aborted ? 'timeout ' + ms + 'ms ' + (() => { try { return new URL(url).host; } catch (_) { return ''; } })() + ' ' : '') + e.message + (c ? ' [' + (c.code || c.message) + ']' : '')); });
+      const r = await fetch(url, { headers: reqHeaders(h), signal: ac.signal, redirect: 'follow' }).catch((e) => { const c = e && e.cause; throw new Error((ac.signal.aborted ? 'timeout ' + ms + 'ms ' + (() => { try { return new URL(url).host; } catch (_) { return ''; } })() + ' ' : '') + e.message + (c ? ' [' + (c.code || c.message) + ']' : '')); });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const b = Buffer.from(await r.arrayBuffer());
       if (b.length > max) throw new Error('segment too large');
       return { buf: b, url: r.url || url };
     } finally { clearTimeout(t); }
   }
-  async function getText(url) { const r = await getBuf(url, 30000, 5e6); return { text: r.buf.toString('utf8'), url: r.url }; }
+  async function getText(url, h) { const r = await getBuf(url, 30000, 5e6, h); return { text: r.buf.toString('utf8'), url: r.url }; }
 
   // master -> media playlist URL. Returns { url } or { unsupported: reason }
   function pickMedia(text, url) {
@@ -164,13 +166,13 @@ module.exports = function createTimeshift(options) {
     if (s.map) {
       mapFile = rec.maps.get(s.map);
       if (!mapFile) {
-        const m = await getBuf(s.map, 15000, 20e6);
+        const m = await getBuf(s.map, 15000, 20e6, rec.hdr);
         mapFile = 'init' + (rec.mapN++) + '.mp4';
         await writeAtomic(rec, mapFile, m.buf);
         rec.maps.set(s.map, mapFile);
       }
     }
-    const g = await getBuf(s.uri, 20000, 80e6);
+    const g = await getBuf(s.uri, 20000, 80e6, rec.hdr);
     if (o.transform) { try { g.buf = await o.transform(s.uri, g.buf); } catch (_) { /* keep the original segment */ } }
     if (!rec.running) return;
     const seq = rec.nextSeq++, file = seq + '.' + extOf(s.uri);
@@ -185,13 +187,13 @@ module.exports = function createTimeshift(options) {
   async function pollOnce(rec) {
     let first = null;
     if (!rec.mediaUrl) {
-      const top = await getText(rec.url);
+      const top = await getText(rec.url, rec.hdr);
       const pick = pickMedia(top.text, top.url);
       if (pick.unsupported) return stopUnsupported(rec, pick.unsupported);
       rec.mediaUrl = pick.url;
       if (pick.url === top.url) first = top;
     }
-    const got = first || await getText(rec.mediaUrl);
+    const got = first || await getText(rec.mediaUrl, rec.hdr);
     const pl = parseMedia(got.text, got.url);
     if (pl.ended) return stopUnsupported(rec, 'playlist is not live (ENDLIST)');
     if (pl.keyed) return stopUnsupported(rec, 'encrypted stream (not supported)');
@@ -267,6 +269,7 @@ module.exports = function createTimeshift(options) {
       const url = o.getUrl(id);
       if (!url) return null;
       rec = newRec(id, url);
+      rec.hdr = o.getHeaders(id) || null;
       chans.set(id, rec);
     }
     mru = [id].concat(mru.filter((x) => x !== id));
