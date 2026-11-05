@@ -139,7 +139,7 @@ async function assertPublicHost(urlStr) {
 }
 const b64u = (s) => Buffer.from(s, 'utf8').toString('base64url');
 const sign = (s) => crypto.createHmac('sha256', SECRET).update(s).digest('base64url').slice(0, 22);
-function makeToken(url, h) { const p = b64u(h && (h.ref || h.ua) ? JSON.stringify({ u: url, r: h.ref || '', a: h.ua || '' }) : url); return `${p}.${sign(p)}`; }
+function makeToken(url, h) { const p = b64u(h && (h.ref || h.ua || h.x) ? JSON.stringify({ u: url, r: h.ref || '', a: h.ua || '', x: h.x ? 1 : 0 }) : url); return `${p}.${sign(p)}`; }
 function readToken(tok) {
   const i = tok.lastIndexOf('.');
   if (i < 1) return null;
@@ -148,18 +148,85 @@ function readToken(tok) {
   if (sig.length !== want.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want))) return null;
   const raw = Buffer.from(p, 'base64url').toString('utf8');
   if (raw[0] !== '{') return { url: raw, h: null };
-  try { const j = JSON.parse(raw); return { url: j.u, h: { ref: j.r || '', ua: j.a || '' } }; } catch (_) { return null; }
+  try { const j = JSON.parse(raw); return { url: j.u, h: { ref: j.r || '', ua: j.a || '', x: !!j.x } }; } catch (_) { return null; }
 }
 const proxyPath = (url, h) => `/p/${makeToken(url, h)}`;
 
 function rewriteManifest(text, baseUrl, h) {
-  const abs = (ref) => { try { return proxyPath(new URL(ref, baseUrl).href, h); } catch (_) { return ref; } };
+  const abs = (ref, hh) => { try { return proxyPath(new URL(ref, baseUrl).href, hh); } catch (_) { return ref; } };
+  let dolby = false;   // set by an AC-3/E-AC-3 STREAM-INF line, applies to the variant URI on the next line
   return text.split(/\r?\n/).map((line) => {
     const t = line.trim();
     if (!t) return line;
-    if (t.startsWith('#')) return line.replace(/URI="([^"]+)"/g, (_, u) => `URI="${abs(u)}"`);
-    return abs(t);
+    if (t.startsWith('#')) {
+      if (t.startsWith('#EXT-X-STREAM-INF')) dolby = /CODECS="[^"]*\b(ac-3|ec-3)\b/i.test(t);
+      return line.replace(/URI="([^"]+)"/g, (_, u) => `URI="${abs(u, h)}"`);
+    }
+    const hh = dolby ? Object.assign({}, h, { x: 1 }) : h;
+    dolby = false;
+    return abs(t, hh);
   }).join('\n');
+}
+
+// ---------- Dolby (AC-3 / E-AC-3) audio -> AAC: Chrome cannot decode Dolby audio, so the video would play silent ----------
+const { spawn } = require('child_process');
+const FFMPEG = [process.env.FFMPEG_PATH, 'C:\\Sites\\tools\\ffmpeg.exe'].find((p) => p && fs.existsSync(p)) || 'ffmpeg';
+const AAC_MAX = 3;                       // simultaneous ffmpeg processes
+let aacActive = 0; const aacWait = [];
+function tsHasDolby(buf) {               // true when an MPEG-TS segment's PMT lists AC-3 / E-AC-3 audio
+  if (buf.length < 376 || buf[0] !== 0x47) return false;
+  let pmtPid = -1;
+  for (let i = 0; i + 188 <= buf.length && i < 188 * 600; i += 188) {
+    if (buf[i] !== 0x47) return false;
+    const pusi = buf[i + 1] & 0x40, pid = ((buf[i + 1] & 0x1f) << 8) | buf[i + 2], afc = (buf[i + 3] >> 4) & 3;
+    if (!pusi || !(afc & 1)) continue;
+    let o = i + 4; if (afc & 2) o += 1 + buf[o];
+    o += 1 + buf[o];                     // pointer_field
+    if (pid === 0 && pmtPid < 0) {
+      const end = o + 3 + (((buf[o + 1] & 0x0f) << 8) | buf[o + 2]) - 4;
+      for (let p = o + 8; p + 4 <= end; p += 4) if (((buf[p] << 8) | buf[p + 1]) !== 0) { pmtPid = ((buf[p + 2] & 0x1f) << 8) | buf[p + 3]; break; }
+    } else if (pid === pmtPid) {
+      const end = o + 3 + (((buf[o + 1] & 0x0f) << 8) | buf[o + 2]) - 4;
+      let p = o + 12 + (((buf[o + 10] & 0x0f) << 8) | buf[o + 11]);
+      while (p + 5 <= end) {
+        const st = buf[p], il = ((buf[p + 3] & 0x0f) << 8) | buf[p + 4];
+        if (st === 0x81 || st === 0x87) return true;
+        if (st === 0x06) for (let d = p + 5; d + 2 <= p + 5 + il; d += 2 + buf[d + 1]) if (buf[d] === 0x6a || buf[d] === 0x7a || buf[d] === 0x81) return true;
+        p += 5 + il;
+      }
+      return false;
+    }
+  }
+  return false;
+}
+function runAac(buf) {                   // video copied untouched, first audio track re-encoded to stereo AAC
+  return new Promise((resolve, reject) => {
+    const args = ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-map', '0:v?', '-map', '0:a:0?', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-copyts', '-muxdelay', '0', '-muxpreload', '0', '-f', 'mpegts', 'pipe:1'];
+    const p = spawn(FFMPEG, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const out = []; let err = '';
+    const timer = setTimeout(() => { p.kill('SIGKILL'); reject(new Error('ffmpeg timeout')); }, 20000);
+    p.stdout.on('data', (d) => out.push(d));
+    p.stderr.on('data', (d) => { if (err.length < 400) err += d; });
+    p.on('error', (e) => { clearTimeout(timer); reject(e); });
+    p.on('close', (code) => { clearTimeout(timer); const b = Buffer.concat(out); if (code === 0 && b.length) resolve(b); else reject(new Error('ffmpeg exit ' + code + ' ' + err.trim().slice(0, 200))); });
+    p.stdin.on('error', () => {});
+    p.stdin.end(buf);
+  });
+}
+async function toAac(buf) {
+  if (aacActive >= AAC_MAX) await new Promise((r) => aacWait.push(r)); else aacActive++;
+  try { return await runAac(buf); }
+  finally { const n = aacWait.shift(); if (n) n(); else aacActive--; }
+}
+const aacCache = new Map();              // upstream segment URL -> Promise<Buffer>, shared by viewers and the timeshift recorder
+function aacFor(url, buf) {
+  let p = aacCache.get(url);
+  if (!p) {
+    p = toAac(buf); aacCache.set(url, p);
+    p.catch(() => aacCache.delete(url));
+    if (aacCache.size > 16) aacCache.delete(aacCache.keys().next().value);
+  }
+  return p;
 }
 
 async function upstreamFetch(url, req, { manifestHint, h }) {
@@ -204,6 +271,20 @@ async function relay(url, req, res, manifestHint, h) {
       res.type(ctype || 'application/octet-stream').send(buf); // wasn't really a manifest
     }
     return;
+  }
+  if (h && h.x && !req.headers.range) {   // Dolby channel: hand the browser AAC instead of AC-3
+    let buf = null;
+    try {
+      buf = Buffer.from(await up.arrayBuffer());
+      let out = buf;
+      if (buf.length < 30 * 1024 * 1024 && tsHasDolby(buf)) out = await aacFor(url, buf);
+      return res.type('video/mp2t').send(out);
+    } catch (e) {
+      logUp(url, 'aac convert failed: ' + ((e && e.message) || ''));
+      if (buf && !res.headersSent) return res.type('video/mp2t').send(buf);   // video without sound beats no video
+      if (!res.headersSent) return res.status(502).type('text/plain').send('upstream unavailable');
+      return;
+    }
   }
   res.status(up.status);
   res.set('Content-Type', /^(video|audio|image)\/|octet-stream/.test(ctype) ? ctype : 'video/mp2t');
@@ -434,7 +515,10 @@ app.get('/api/guide', requireAuth, (req, res) => {
 });
 // ---------- long pause/rewind buffer (timeshift.js) ----------
 try {
-  const tsb = require('./timeshift')({ getUrl: (id) => { const c = getPlaylist().byId.get(id); return c ? c.url : null; } });
+  const tsb = require('./timeshift')({
+    getUrl: (id) => { const c = getPlaylist().byId.get(id); return c ? c.url : null; },
+    transform: async (url, buf) => { try { return tsHasDolby(buf) ? await aacFor(url, buf) : buf; } catch (e) { logUp(url, 'aac convert failed (timeshift): ' + ((e && e.message) || '')); return buf; } },
+  });
   tsb.mount(app, requireAuth);
 } catch (e) { console.error('[tv] timeshift disabled:', e && e.message); }
 app.use((_req, res) => res.status(404).type('text/plain').send('not found'));

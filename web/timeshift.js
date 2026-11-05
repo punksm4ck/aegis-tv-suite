@@ -67,6 +67,7 @@ function parseMedia(text, base) {
 module.exports = function createTimeshift(options) {
   const o = Object.assign({
     dir: path.join(__dirname, 'data', 'tsbuf'),
+    transform: null,                                      // optional async (url, buf) -> buf, applied to every saved segment
     getUrl: () => null,                                   // channel id -> upstream playlist URL (master or media)
     enabled: process.env.TSB_DISABLE !== '1',
     maxChannels: Math.round(envNum('TSB_MAX_CH', 5)),
@@ -170,6 +171,7 @@ module.exports = function createTimeshift(options) {
       }
     }
     const g = await getBuf(s.uri, 20000, 80e6);
+    if (o.transform) { try { g.buf = await o.transform(s.uri, g.buf); } catch (_) { /* keep the original segment */ } }
     if (!rec.running) return;
     const seq = rec.nextSeq++, file = seq + '.' + extOf(s.uri);
     await writeAtomic(rec, file, g.buf);
