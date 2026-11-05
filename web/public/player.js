@@ -190,7 +190,7 @@
     return out;
   }
   // ---- what's on now (picker right column) ----
-  var nowCache = {};
+  var nowCache = {}, nowBusy = {};
   function nowTitle(c) {
     var e = nowCache[c.group], a = e && e.ch[c.id];
     if (!a) return '';
@@ -213,10 +213,16 @@
       if (!e || Date.now() - e.t > 60000) need.push(c.group);
     });
     need.slice(0, 8).forEach(function (gk) {
+      if (nowBusy[gk]) return;                 // a request for this group is already in flight
+      nowBusy[gk] = 1;
       fetch('/api/guide?all=1&group=' + encodeURIComponent(gk), { credentials: 'same-origin' })
         .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (j) { if (j) { nowCache[gk] = { t: Date.now(), ch: j.channels || {} }; paintNow(); } })
-        .catch(function () {});
+        .then(function (j) {
+          nowBusy[gk] = 0;
+          if (j) { nowCache[gk] = { t: Date.now(), ch: j.channels || {} }; paintNow(); }
+          else nowCache[gk] = { t: Date.now() - 45000, ch: {} };      // failed: retry in ~15 s, not on every keystroke
+        })
+        .catch(function () { nowBusy[gk] = 0; nowCache[gk] = { t: Date.now() - 45000, ch: {} }; });
     });
   }
   function renderList() {
